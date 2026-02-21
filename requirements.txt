@@ -4,3 +4,4 @@ vectorbt
 sqlalchemy
 kaleido
 pandas-ta
+python-telegram-bot

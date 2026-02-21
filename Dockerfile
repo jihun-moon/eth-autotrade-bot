@@ -1,27 +1,29 @@
-# 1. vectorbt와 pandas-ta의 호환성이 가장 좋은 3.10 버전을 사용합니다.
-FROM python:3.10-slim
+# 1. vectorbt 및 pandas-ta와 가장 호환성이 좋은 3.9 버전을 사용합니다.
+FROM python:3.9-slim
 
+# 작업 디렉토리 설정
 WORKDIR /app
 
-# 2. 빌드에 필요한 시스템 도구 설치
+# 2. 필수 빌드 도구 및 git 설치
+# 일부 패키지 컴파일 및 설치를 위해 필요합니다.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    python3-dev \
     gcc \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. pip 업그레이드
-RUN pip install --no-cache-dir --upgrade pip
+# 3. 의존성 충돌 방지를 위해 핵심 라이브러리 선설치
+# vectorbt가 요구하는 특정 버전을 먼저 고정합니다.
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir "numpy<1.21" "pandas<1.4"
 
-# 4. 의존성 충돌의 핵심인 pandas와 numpy를 먼저 설치 (vectorbt 호환 버전)
-RUN pip install --no-cache-dir "pandas<2.0.0" "numpy<1.24"
-
-# 5. 패키지 목록 복사 및 설치
+# 4. 나머지 패키지 설치
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 6. 소스 코드 복사
+# 5. 전체 소스 코드 복사
 COPY . .
 
-# 7. 실행 명령어
+# 6. 실행 명령어
 CMD ["python", "src/main.py"]
