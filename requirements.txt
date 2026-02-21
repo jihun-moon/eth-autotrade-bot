@@ -5,5 +5,6 @@ python-dotenv
 vectorbt==0.28.1
 sqlalchemy
 kaleido
-pandas-ta==0.3.14b0
+# 아래 줄을 정확히 복사하세요. GitHub에서 직접 강제 설치하는 명령어입니다.
+git+https://github.com/twopirllc/pandas-ta.git@development
 python-telegram-bot
