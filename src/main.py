@@ -16,9 +16,9 @@ BOT_NAME = "Bottom-Scanner"
 
 # --- 가상 투자(모의투자) 설정 ---
 INITIAL_BALANCE = 1300.0  
-LEVERAGE = 50             
+LEVERAGE = 10             
 TP_PCT = 0.02             
-SL_PCT = 0.01             
+SL_PCT = 0.015             
 FEE_RATE = 0.0005         # 💸 바이낸스 선물 시장가 수수료 0.05%
 # -----------------------------
 
@@ -61,7 +61,7 @@ async def run_bot():
 
     while True:
         try:
-            df = fetch_historical_data(limit=600)
+            df = fetch_historical_data(limit=1000)
             df = add_indicators(df)
             df = apply_strategy(df, ema_len=30)
             
