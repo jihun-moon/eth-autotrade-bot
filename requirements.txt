@@ -5,5 +5,5 @@ python-dotenv
 vectorbt==0.28.1
 sqlalchemy
 kaleido
-pandas-ta-classic
+pandas-ta==0.3.14b0
 python-telegram-bot

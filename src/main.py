@@ -2,7 +2,7 @@ import time
 from fetcher import fetch_historical_data
 from indicators import add_indicators
 from strategy import apply_strategy
-import pandas_ta_classic as ta
+import pandas_ta as ta
 
 def run_bot():
     print("🧪 [테스트 모드] 스나이퍼 자동매매 데이터 검증 가동...")
