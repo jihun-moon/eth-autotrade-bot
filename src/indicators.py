@@ -7,8 +7,8 @@ def add_indicators(df):
     df['RSI'] = ta.rsi(df['close'], length=14)
     df['EMA_50'] = ta.ema(df['close'], length=50)
     
-    # 2. 볼륨 프로파일 계산 (최근 200캔들 기준 매물대 확인)
-    lookback = 200
+    # 2. 볼륨 프로파일 계산 (최근 480캔들 기준 매물대 확인)
+    lookback = 480
     if len(df) >= lookback:
         window = df.iloc[-lookback:]
         bins = np.linspace(window['low'].min(), window['high'].max(), 50)

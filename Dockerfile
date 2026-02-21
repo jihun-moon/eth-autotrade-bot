@@ -3,6 +3,9 @@ FROM python:3.10
 
 WORKDIR /app
 
+# 파이썬 출력이 버퍼링 없이 즉시 터미널에 찍히도록 설정합니다.
+ENV PYTHONUNBUFFERED=1
+
 # 2. 시스템 업데이트 및 필수 도구 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
