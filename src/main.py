@@ -1,7 +1,7 @@
 import os
 import asyncio
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telegram import Bot
 from dotenv import load_dotenv
 from fetcher import fetch_historical_data
@@ -13,6 +13,9 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 BOT_NAME = "Bottom-Scanner" 
+
+# 🌟 한국 시간(KST) 세팅
+KST = timezone(timedelta(hours=9))
 
 # --- 가상 투자(모의투자) 설정 ---
 INITIAL_BALANCE = 1300.0  
@@ -66,7 +69,7 @@ async def run_bot():
             df = apply_strategy(df, ema_len=30)
             
             last = df.iloc[-1]
-            current_time = datetime.now()
+            current_time = datetime.now(KST) # 🌟 한국 시간(KST) 적용
             current_price = last['close']
             
             # ==========================================
@@ -107,6 +110,7 @@ async def run_bot():
                     print(msg)
                     await send_telegram_msg(msg)
                 else:
+                    # 🌟 지훈님이 원래 쓰셨던 문구 그대로 복구
                     print(f"🔍 [감시 중] {current_time.strftime('%H:%M:%S')} | 가격: {current_price:.2f} | 진입 대기...")
             
             # ==========================================
@@ -187,9 +191,13 @@ async def run_bot():
                     if close_reason == "강제청산(LIQ)":
                         break 
 
-            now = datetime.now()
+            now = datetime.now(KST) # 🌟 여기도 KST 적용
             next_run = now.replace(second=0, microsecond=0) + timedelta(minutes=3 - (now.minute % 3))
             sleep_seconds = (next_run - now).total_seconds()
+            
+            # 🌟 지연 시간 방지(Drift 계산)는 지훈님이 짜신 게 완벽합니다. 프린트문만 추가했습니다!
+            if sleep_seconds > 0:
+                print(f"⏳ 3분봉 캔들 정각까지 {int(sleep_seconds)}초 대기 중... (다음 실행: {next_run.strftime('%H:%M:%S')})")
             
             await asyncio.sleep(sleep_seconds)
             
