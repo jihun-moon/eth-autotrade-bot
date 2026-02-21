@@ -1,17 +1,15 @@
-# 1. 호환성이 가장 좋은 Python 3.10 버전을 사용합니다.
-FROM python:3.10-slim
+# 1. pandas-ta와 vectorbt의 최신 호환성을 위해 3.11을 사용합니다.
+FROM python:3.11-slim
 
-# 작업 디렉토리 설정
 WORKDIR /app
 
-# 2. 필수 빌드 도구 설치 (vectorbt 및 pandas 설치 시 컴파일러가 필요할 수 있음)
+# 2. 빌드에 필요한 최소한의 도구 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    python3-dev \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. 패키지 목록 복사 및 설치
+# 3. 패키지 설치 (pip 자체부터 최신화)
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
@@ -19,5 +17,5 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # 4. 소스 코드 복사
 COPY . .
 
-# 5. 실행 명령어
+# 5. 실행
 CMD ["python", "src/main.py"]
