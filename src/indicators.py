@@ -7,18 +7,16 @@ def add_indicators(df):
     df['RSI'] = ta.rsi(df['close'], length=14)
     df['EMA_50'] = ta.ema(df['close'], length=50)
     
-    # 2. 볼륨 프로파일 계산 (최근 480캔들 기준 매물대 확인)
+    # 2. 볼륨 프로파일 계산 (최근 480캔들 기준) - iterrows 제거로 속도 최적화
     lookback = 480
     if len(df) >= lookback:
         window = df.iloc[-lookback:]
-        bins = np.linspace(window['low'].min(), window['high'].max(), 50)
-        vols = np.zeros(len(bins)-1)
-        for _, row in window.iterrows():
-            idx = np.digitize((row['high'] + row['low']) / 2, bins) - 1
-            if 0 <= idx < len(vols): vols[idx] += row['volume']
+        
+        mid_prices = (window['high'] + window['low']) / 2
+        vols, bin_edges = np.histogram(mid_prices, bins=50, weights=window['volume'])
         
         poc_idx = np.argmax(vols)
-        df['POC'] = (bins[poc_idx] + bins[poc_idx+1]) / 2  # 회색선 (Point of Control)
+        df['POC'] = (bin_edges[poc_idx] + bin_edges[poc_idx+1]) / 2  # 회색선 (Point of Control)
         
         # 가치 영역(VA 70%) 계산
         va_target = vols.sum() * 0.7
@@ -33,10 +31,10 @@ def add_indicators(df):
             else:
                 current_v += rv
                 r += 1
-        df['VAL'] = bins[l]  # 파란영역 하단 (Value Area Low)
-        df['VAH'] = bins[r]  # 파란영역 상단 (Value Area High)
+        df['VAL'] = bin_edges[l]      # 파란영역 하단 (Value Area Low)
+        df['VAH'] = bin_edges[r+1]    # 파란영역 상단 (Value Area High)
     
-    # 3. 스퀴즈 모멘텀 (안전한 컬럼 참조 방식)
+    # 3. 스퀴즈 모멘텀
     bb = ta.bbands(df['close'], length=20, std=2.0)
     kc = ta.kc(df['high'], df['low'], df['close'], length=20, scalar=1.5)
     df = pd.concat([df, bb, kc], axis=1)

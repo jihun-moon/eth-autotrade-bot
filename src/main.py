@@ -1,22 +1,20 @@
-import time
 import os
 import asyncio
+from datetime import datetime, timedelta
 from telegram import Bot
 from dotenv import load_dotenv
 from fetcher import fetch_historical_data
 from indicators import add_indicators
 from strategy import apply_strategy
+from trader import execute_buy_order, check_my_balance 
 
-# .env 파일의 환경 변수를 불러옵니다
 load_dotenv()
 
-# 텔레그램 설정값 ( .env에 적은 값을 가져옴 )
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-BOT_NAME = "Bottom-Scanner"  # 지훈님이 정하신 이름을 여기에 적으세요!
+BOT_NAME = "Bottom-Scanner" 
 
 async def send_telegram_msg(message):
-    """텔레그램으로 메시지를 보내는 함수"""
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
         full_msg = f"[{BOT_NAME}]\n{message}"
@@ -24,49 +22,50 @@ async def send_telegram_msg(message):
     except Exception as e:
         print(f"❌ 텔레그램 알림 전송 실패: {e}")
 
-def run_bot():
-    print(f"🚀 [{BOT_NAME}] 실전 모드 가동! 텔레그램 알림이 활성화되었습니다.")
+async def run_bot():
+    print(f"🚀 [{BOT_NAME}] 시그널 전용 모드 가동! (실제 매수 차단됨)")
     
-    # --- 아래 한 줄을 추가하여 시작 알림을 보냅니다 ---
-    asyncio.run(send_telegram_msg(f"✅ {BOT_NAME} 연결 성공! 지금부터 이더리움 바닥 낚시를 시작합니다."))
-    # -----------------------------------------------
-    
+    # 에러 없이 시작 알림 전송
+    check_my_balance()
+    await send_telegram_msg("✅ 봇 가동 시작!\n(현재 테스트 모드: 실제 매수는 진행되지 않으며 롱 타점 시그널만 전송됩니다.)")
+
     while True:
         try:
-            # 1. 최신 데이터 수집 (3분봉)
+            # 1. 데이터 수집 및 지표/전략 계산
             df = fetch_historical_data(limit=600)
-            
-            # 2. 지표 계산 (lookback 480 반영된 indicators.py 호출)
             df = add_indicators(df)
-            
-            # 3. 매물대 낚시 전략 실행
             df = apply_strategy(df, ema_len=30)
             
             last = df.iloc[-1]
-            current_time = last.name
+            current_time = datetime.now()
             
-            # 4. 타점 포착 시 텔레그램 알림 전송
+            # 2. 롱 시그널 포착 시 텔레그램 알림 전송
             if last['Long_Signal']:
-                msg = (f"🎯 [타점 포착!]\n"
-                       f"⏰ 시간: {current_time}\n"
+                msg = (f"🎯 [롱 타점 포착!]\n"
+                       f"⏰ 시간: {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                        f"💰 가격: {last['close']}\n"
-                       f"📊 회색선(POC): {last['POC']:.2f}\n"
-                       f"📉 파란선(VAL): {last['VAL']:.2f}\n"
-                       f"👉 현재 상태: 매물대 하단 이탈 및 반등 컨펌!")
+                       f"👉 매수 시그널 발생! (테스트 모드로 실제 매수는 생략됨)")
                 print(msg)
+                await send_telegram_msg(msg)
                 
-                # 비동기 함수인 텔레그램 전송 실행
-                asyncio.run(send_telegram_msg(msg))
+                # 매수 함수 호출 (현재 trader.py에서 주석 처리되어 실제 주문은 안 들어감)
+                execute_buy_order(symbol='ETH/USDT')
+                
             else:
-                # 작동 중임을 알리기 위한 로그
-                print(f"🔍 [감시 중] {current_time} | 가격: {last['close']} | 시그널 대기 중...")
+                print(f"🔍 [감시 중] {current_time.strftime('%H:%M:%S')} | 가격: {last['close']} | 시그널 대기 중...")
             
-            # 3분봉이므로 3분(180초) 대기
-            time.sleep(180) 
+            # 3. 시간 오차(Drift) 방지: 다음 3분봉 캔들 정각까지 남은 초 계산
+            now = datetime.now()
+            next_run = now.replace(second=0, microsecond=0) + timedelta(minutes=3 - (now.minute % 3))
+            sleep_seconds = (next_run - now).total_seconds()
+            
+            print(f"⏳ 다음 캔들 갱신까지 {int(sleep_seconds)}초 대기...")
+            await asyncio.sleep(sleep_seconds)
             
         except Exception as e:
-            print(f"⚠️ 에러 발생: {e}")
-            time.sleep(10)
+            print(f"⚠️ 봇 실행 중 에러 발생: {e}")
+            await asyncio.sleep(10) # 에러 시 10초 대기 후 재시도
 
 if __name__ == "__main__":
-    run_bot()
+    # 비동기 루프 실행
+    asyncio.run(run_bot())
