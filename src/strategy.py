@@ -1,29 +1,16 @@
-def apply_strategy(df):
-    # 1. 추세 및 수급 필터
-    df['Trend_OK'] = df['close'] > df['EMA_50']
-    df['CVD_OK'] = df['CVD'] > df['CVD_Signal']
-    df['Vol_OK'] = df['volume'] > ta.sma(df['volume'], length=20)
+def apply_strategy(df, ema_len=50, tp=0.02, sl=0.01):
+    # 1. 지훈님의 매물대 하단 낚시 조건
+    df['Below_Structure'] = df['close'] < df['VAL'] # 파란 영역 하단 밑
     
-    # 2. RSI Bullish Divergence (간소화된 벡터 로직)
-    # 최근 5캔들 저점 갱신 vs RSI 저점 상승 여부 확인
-    df['Low_5'] = df['low'].rolling(5).min()
-    df['RSI_Min_5'] = df['RSI'].rolling(5).min()
+    # 2. RSI 다이버전스 (컨펌)
+    df['Low_3'] = df['low'].rolling(3).min()
+    df['Bull_Div'] = (df['low'] == df['Low_3']) & (df['RSI'] > df['RSI'].shift(1))
     
-    # 다이버전스: 가격은 전저점보다 낮아졌는데, RSI는 전저점보다 높을 때
-    df['Bull_Div'] = (df['low'] == df['Low_5']) & (df['RSI'] > df['RSI_Min_5'].shift(1))
-    
-    # 3. 최종 진입 시그널 (SMC Killzone 포함)
+    # 3. 최종 시그널
     df['Long_Signal'] = (
+        df['Below_Structure'] & 
         df['Bull_Div'] & 
-        df['Trend_OK'] & 
-        df['CVD_OK'] & 
-        df['Vol_OK'] & 
-        (~df['Squeeze_On']) & 
-        df['is_killzone']
+        (df['CVD'] > df['CVD_Signal']) &
+        (df['close'] > ta.ema(df['close'], length=ema_len)) # 추세 순응
     )
-    
-    # 4. 피보나치 목표가 계산용 Swing High/Low
-    df['Swing_Low'] = df['low'].rolling(10).min()
-    df['Swing_High'] = df['high'].rolling(10).max()
-    
     return df

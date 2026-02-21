@@ -1,16 +1,9 @@
 version: '3.8'
-
 services:
   eth-bot:
     build: .
     restart: always
     volumes:
-      - ./db:/app/db      # 로컬 db 폴더와 컨테이너 내부 연결 (데이터 보존)
-      - ./data:/app/data  # 로컬 data 폴더와 연결
+      - ./db:/app/db
     env_file:
-      - .env              # .env 파일의 환경변수 로드
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10mb"
-        max-file: "3"
+      - .env

@@ -1,19 +1,23 @@
 import vectorbt as vbt
+import os
+from fetcher import fetch_historical_data
+from indicators import add_indicators
+from strategy import apply_strategy
 
-def run_vectorbt_backtest(df):
-    # 시그널 추출
-    entries = df['Long_Signal']
+def run_test():
+    print("📊 통합 백테스트 시작...")
+    df = fetch_historical_data(limit=2000)
+    df = apply_strategy(add_indicators(df))
     
-    # TP/SL 설정 (피보나치 1.0 비율 가정)
-    # 실제 환경에서는 개별 진입가 기준이나, 벡터 연산에서는 고정 비율로 우선 테스트
-    portfolio = vbt.Portfolio.from_signals(
-        df['close'], 
-        entries, 
-        None, 
-        fees=0.001,      # 수수료 0.1%
-        slippage=0.0005, # 슬리피지 0.05%
-        freq='3m'
+    pf = vbt.Portfolio.from_signals(
+        df['close'], entries=df['Long_Signal'], exits=None,
+        tp_stop=0.02, sl_stop=0.01, fees=0.00075, freq='3m'
     )
     
-    print(portfolio.stats())
-    portfolio.plot().write_image("backtest_result.png") # 결과 차트 저장
+    print(pf.stats())
+    os.makedirs('data', exist_ok=True)
+    pf.plot().write_image("data/backtest_result.png")
+    print("✅ 분석 완료 (data/backtest_result.png 저장됨)")
+
+if __name__ == "__main__":
+    run_test()
