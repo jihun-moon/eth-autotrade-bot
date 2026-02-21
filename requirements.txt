@@ -1,9 +1,9 @@
 ccxt
 pandas==1.5.3
 numpy==1.23.5
-pandas-ta==0.3.14b0
 python-dotenv
 vectorbt==0.28.1
 sqlalchemy
 kaleido
+pandas-ta-classic
 python-telegram-bot
