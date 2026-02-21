@@ -4,22 +4,25 @@ from indicators import add_indicators
 from strategy import apply_strategy
 
 def run_final_test():
-    print("📊 [최종 검증] 황금 수치(EMA 30, TP 2%, SL 1%) 적용 중...")
+    print("📊 [최종 검증] 양방향(LONG/SHORT) 전략 성적표 도출 중...")
     df = fetch_historical_data(limit=1000)
     df = apply_strategy(add_indicators(df))
     
+    # 🌟 숏(Short) 진입 조건 추가 완료
     pf = vbt.Portfolio.from_signals(
         df['close'], 
-        entries=df['Long_Signal'], 
+        entries=df['Long_Signal'],        # 롱 진입
+        short_entries=df['Short_Signal'], # 숏 진입
         exits=None,
-        tp_stop=0.02, # 👈 최적화 결과: 익절 2%
-        sl_stop=0.01, # 👈 최적화 결과: 손절 1%
-        fees=0.00075, # 바이낸스 실질 수수료
+        short_exits=None,
+        tp_stop=0.02, 
+        sl_stop=0.01, 
+        fees=0.00075, 
         freq='3m'
     )
     
     print("\n" + "="*50)
-    print("📈 ETH 스나이퍼 전략 최종 성적표")
+    print("📈 ETH 스나이퍼 양방향 전략 최종 성적표")
     print(pf.stats())
     print("="*50)
 
