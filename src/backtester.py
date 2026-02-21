@@ -5,7 +5,7 @@ from strategy import apply_strategy
 
 def run_final_test():
     print("📊 [최종 검증] 양방향(LONG/SHORT) 전략 성적표 도출 중...")
-    df = fetch_historical_data(limit=1000)
+    df = fetch_historical_data(limit=5000)
     df = apply_strategy(add_indicators(df))
     
     # 🌟 숏(Short) 진입 조건 추가 완료
