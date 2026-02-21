@@ -1,8 +1,6 @@
 ccxt
-pandas
-numpy
-pandas_ta
 python-dotenv
 vectorbt
 sqlalchemy
 kaleido
+pandas-ta
