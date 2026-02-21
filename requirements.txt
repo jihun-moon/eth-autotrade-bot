@@ -1,4 +1,8 @@
 ccxt
 pandas
 numpy
+pandas_ta
 python-dotenv
+vectorbt  # 초고속 벡터 백테스팅
+sqlalchemy  # DB 관리
+python-telegram-bot  # 텔레그램 알림
