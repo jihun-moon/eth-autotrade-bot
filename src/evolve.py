@@ -10,17 +10,19 @@ from indicators import add_indicators
 
 load_dotenv()
 
-# 🌟 알려주신 Upstage API 세팅 적용 완료
+# Upstage API 세팅
 client = OpenAI(
     api_key=os.getenv('UPSTAGE_API_KEY'),
     base_url="https://api.upstage.ai/v1" 
 )
 
 def test_code_syntax():
-    """AI가 짠 코드가 에러 없이 돌아가는지 가상 테스트 (자가 검증)"""
+    """AI가 짠 코드가 에러 없이 돌아가는지 가상 테스트"""
     try:
-        df = fetch_historical_data(limit=100)
+        # 🌟 해결점 1: 매물대 계산을 위해 최소 480개 이상이 필요하므로 1000개로 수정!
+        df = fetch_historical_data(limit=1000)
         df = add_indicators(df)
+        
         import strategy_candidate
         importlib.reload(strategy_candidate)
         df = strategy_candidate.apply_strategy(df)
@@ -40,19 +42,21 @@ def generate_and_correct_strategy():
     ```python
     {current_code}
     ```
-    현재 봇은 '역추세 매매' 기반이라 횡보장에서는 좋지만 강한 상승/폭락장에서는 스탑로스가 터져.
+    현재 봇은 횡보장에서는 좋지만 강한 상승/폭락장에서는 스탑로스가 터져.
     내 데이터프레임에는 `df['ADX']` (추세 강도)와 `df['EMA_200']` (장기 추세선) 컬럼이 이미 계산되어 있어.
     
-    이 변수들을 조합해서 리스크를 관리하는 새로운 `apply_strategy(df, ema_len=30)` 함수 전체 코드를 짜줘.
-    - 강한 추세장(예: ADX > 25)이면서 상승장(close > EMA_200)일 때는 역추세 Short 진입을 차단해.
-    - 강한 추세장이면서 하락장(close < EMA_200)일 때는 역추세 Long 진입을 차단해.
-    - 기존의 VAL, VAH, 다이버전스(Bull_Div, Bear_Div) 로직은 그대로 유지하면서 이 장세 필터 조건만 영리하게 추가해.
+    이 변수들을 조합해서 리스크를 관리하는 새로운 코드를 작성해줘.
+    
+    [💡 필수 준수 사항]
+    1. 파일 맨 위에 반드시 `import pandas_ta as ta` 를 포함해서 전체 완성된 코드를 짜줘.
+    2. 강한 추세장(예: ADX > 25)이면서 상승장(close > EMA_200)일 때는 역추세 Short 진입을 차단해.
+    3. 강한 추세장이면서 하락장(close < EMA_200)일 때는 역추세 Long 진입을 차단해.
+    4. 기존의 VAL, VAH, 다이버전스(Bull_Div, Bear_Div) 로직은 그대로 유지해.
     """
     
     for attempt in range(1, 4):
         print(f"🤖 AI 전략 진화 시도 ({attempt}/3)...")
         
-        # 🌟 모델명 solar-pro3 적용 및 stream=False 처리
         response = client.chat.completions.create(
             model="solar-pro3",
             messages=[
@@ -77,7 +81,7 @@ def generate_and_correct_strategy():
             print("✅ AI 코드 문법 테스트 통과! (에러 없음)")
             return new_code_clean
         else:
-            print(f"⚠️ 문법 에러 발생. AI가 스스로 재수정을 시도합니다...\n{error_msg[:100]}")
+            print(f"⚠️ 문법 에러 발생. AI가 스스로 재수정을 시도합니다...\n{error_msg[:200]}")
             user_prompt = f"네가 짜준 코드에 에러가 났어. 고쳐서 다시 전체 코드를 짜줘:\n{error_msg}"
             
     return None
@@ -98,7 +102,7 @@ def run_backtest_and_chart():
     )
     
     fig = pf.plot()
-    fig.write_image("report.png", width=1200, height=800) # 🌟 차트 이미지 저장
+    fig.write_image("report.png", width=1200, height=800)
     return pf.total_return() * 100, pf.trades.count()
 
 if __name__ == "__main__":
@@ -106,6 +110,5 @@ if __name__ == "__main__":
         return_pct, trade_count = run_backtest_and_chart()
         print(f"🎉 진화 완료! 예상 수익률: {return_pct:.2f}% (거래 횟수: {trade_count})")
         
-        # 텔레그램 봇이 읽을 수 있게 성적표 텍스트 저장
         with open("report_stats.txt", "w") as f:
             f.write(f"{return_pct:.2f},{trade_count}")
