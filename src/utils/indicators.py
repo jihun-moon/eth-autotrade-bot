@@ -3,14 +3,15 @@ import pandas_ta as ta
 import numpy as np
 
 def add_indicators(df):
+    """지표 통합 계산 (Volume Profile + Squeeze Momentum)"""
     if df is None or len(df) < 200: return df
     
-    # 1. 기본 지표 (RSI, EMA)
+    # 1. 기본 지표 계산
     df['RSI'] = ta.rsi(df['close'], length=14).fillna(50)
     df['EMA_200'] = ta.ema(df['close'], length=200).fillna(df['close'])
     df['ADX'] = ta.adx(df['high'], df['low'], df['close'])['ADX_14'].fillna(0)
 
-    # 2. 볼륨 프로파일 (지훈님의 Histogram 방식 유지)
+    # 2. 볼륨 프로파일 (Histogram 방식)
     lookback = 480
     if len(df) >= lookback:
         window = df.iloc[-lookback:]
@@ -30,13 +31,12 @@ def add_indicators(df):
         df['VAL'] = df['close'].rolling(100).quantile(0.2)
         df['VAH'] = df['close'].rolling(100).quantile(0.8)
 
-    # 3. 스퀴즈 모멘텀 (KeyError 해결 버전)
+    # 3. 스퀴즈 모멘텀 (KeyError 동적 방어)
     bb = ta.bbands(df['close'], length=20, std=2.0)
     kc = ta.kc(df['high'], df['low'], df['close'], length=20, scalar=1.5)
     df = pd.concat([df, bb, kc], axis=1)
     
     try:
-        # 🌟 컬럼명을 문자열이 아닌 패턴으로 찾아 에러 원천 차단
         bbl_col = [c for c in df.columns if c.startswith('BBL_')][0]
         bbu_col = [c for c in df.columns if c.startswith('BBU_')][0]
         kcl_col = [c for c in df.columns if c.startswith('KCL') or c.startswith('KCLe')][0]
@@ -45,7 +45,7 @@ def add_indicators(df):
     except:
         df['Squeeze_On'] = False
 
-    # 4. CVD (지훈님의 세력 수급 로직)
+    # 4. CVD (수급 지표)
     vol_delta = np.where(df['close'] > df['open'], df['volume'] * 0.6, -df['volume'] * 0.6)
     df['CVD'] = ta.ema(pd.Series(vol_delta, index=df.index), length=14)
     df['CVD_Signal'] = ta.sma(df['CVD'], length=9)
