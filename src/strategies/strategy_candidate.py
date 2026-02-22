@@ -2,99 +2,103 @@ import pandas as pd
 import numpy as np
 import pandas_ta as ta
 
-def apply_strategy(df, ema_len=30, tp=0.02, sl=0.015):
-    # 필수 컬럼 체크 및 누락 시 계산
-    required = ['close', 'low', 'high', 'RSI', 'VAL', 'VAH', 'CVD', 'CVD_Signal', 'ADX', 'EMA_200']
-    for col in required:
-        if col not in df.columns:
-            if col == 'RSI':
-                df['RSI'] = ta.rsi(df['close'], length=14)
-            elif col == 'EMA_200':
-                df['EMA_200'] = ta.ema(df['close'], length=200)
+def apply_strategy(
+    df: pd.DataFrame,
+    ema_len: int = 30,
+    adx_len: int = 14,
+    rsi_len: int = 14,
+    val_volume_pct: float = 0.7,
+    val_end_pct: float = 0.9,
+    low_lookback: int = 5,
+    high_lookback: int = 5,
+    cvd_signal_len: int = 20,
+    adx_thresh: float = 25,
+    tp: float = 0.02,
+    sl: float = 0.015,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    개선된 퀀트 매매 전략.
+    - VAL/VAH (Value Area Low/High) 를 직접 계산.
+    - 저점/고점 갱신 시 RSI 상승/하락을 이용한 다이버전스 강화.
+    - CVD (Close‑Open) * Volume 로 수급 필터 적용.
+    - ADX 기반 추세 방어 로직 포함.
+    - 불리언 연산 시 astype(bool) 사용, np.where 로 numpy 배열 처리 후 ffill().
+    """
+    # 기본 지표
+    df["RSI"] = ta.rsi(df["close"], length=rsi_len)
+    df["EMA"] = ta.ema(df["close"], length=ema_len)
+    df["ADX"] = ta.adx(df["high"], df["low"], df["close"], length=adx_len)
 
-    # EMA_Short (가격 방향성)
-    df['EMA_Short'] = ta.ema(df['close'], length=ema_len)
+    # CVD (Close‑Open) * Volume
+    df["CVD"] = (df["close"] - df["open"]) * df["volume"]
+    df["CVD_Signal"] = ta.ema(df["CVD"], length=cvd_signal_len)
 
-    # 저점/고점 Lookback
-    df['Low_Lookback'] = df['low'].rolling(5).min()
-    df['High_Lookback'] = df['high'].rolling(5).max()
+    # Value Area Low / High (70%~90% 누적 거래량 구간)
+    total_vol = df["volume"].sum()
+    cum_vol = df["volume"].cumsum()
+    val_start = cum_vol >= total_vol * val_volume_pct
+    val_end   = cum_vol >= total_vol * val_end_pct
 
-    # RSI Divergence
-    df['Bull_Div'] = (df['low'] <= df['Low_Lookback']) & (df['RSI'] > df['RSI'].shift(1))
-    df['Bear_Div'] = (df['high'] >= df['High_Lookback']) & (df['RSI'] < df['RSI'].shift(1))
+    df["VAL"] = np.nan
+    df["VAH"] = np.nan
+    df.loc[val_start & val_end, "VAL"] = df.loc[val_start & val_end, "low"].min()
+    df.loc[val_start & val_end, "VAH"] = df.loc[val_start & val_end, "high"].max()
+    df["VAL"] = df["VAL"].ffill()
+    df["VAH"] = df["VAH"].ffill()
 
-    # 가격 교차 조건 (이전 캔들 대비 VAL/VAH 위치)
-    df['Prev_Close_Below_VAL'] = (df['close'].shift(1) < df['VAL'].shift(1) * 1.001).astype(bool)
-    df['Prev_Close_Above_VAH'] = (df['close'].shift(1) > df['VAH'].shift(1) * 0.999).astype(bool)
+    # 저점/고점 갱신 다이버전스
+    df["Low_Lookback"] = df["low"].rolling(window=low_lookback).min()
+    df["High_Lookback"] = df["high"].rolling(window=high_lookback).max()
 
-    df['Close_Above_VAL'] = (df['close'] >= df['VAL'] * 1.001).astype(bool)
-    df['Close_Below_VAH'] = (df['close'] <= df['VAH'] * 0.999).astype(bool)
-
-    # CVD 방향성
-    df['CVD_Up'] = (df['CVD'] > df['CVD_Signal']).astype(bool)
-    df['CVD_Down'] = (df['CVD'] < df['CVD_Signal']).astype(bool)
-
-    # EMA 방향성
-    df['EMA_Up'] = (df['EMA_Short'] > df['EMA_200']).astype(bool)
-    df['EMA_Down'] = (df['EMA_Short'] < df['EMA_200']).astype(bool)
-
-    # ADX 조건 (추세 강도)
-    df['ADX_Strength'] = (df['ADX'] > 20).astype(bool)
-
-    # 롱 시그널: VAL 아래 → VAL 위로 복귀 + Bull_Div + CVD 상승 + EMA 상승 + ADX 강도
-    df['Long_Signal'] = (
-        df['Prev_Close_Below_VAL'] &
-        df['Close_Above_VAL'] &
-        df['Bull_Div'] &
-        df['CVD_Up'] &
-        df['EMA_Up'] &
-        df['ADX_Strength']
-    ).astype(bool)
-
-    # 숏 시그널: VAH 위 → VAH 아래로 복귀 + Bear_Div + CVD 하락 + EMA 하락 + ADX 강도
-    df['Short_Signal'] = (
-        df['Prev_Close_Above_VAH'] &
-        df['Close_Below_VAH'] &
-        df['Bear_Div'] &
-        df['CVD_Down'] &
-        df['EMA_Down'] &
-        df['ADX_Strength']
-    ).astype(bool)
-
-    # Signal 생성 (np.where → pd.Series)
-    df['Signal'] = pd.Series(
-        np.where(df['Long_Signal'], 1,
-                np.where(df['Short_Signal'], -1, 0)),
-        index=df.index
+    # Bullish / Bearish divergence (np.where → ffill)
+    df["Bull_Div"] = pd.Series(
+        np.where(
+            (df["low"] == df["Low_Lookback"]) & (df["RSI"] > df["RSI"].shift(1)),
+            1,
+            0,
+        ),
+        index=df.index,
     ).ffill()
 
-    # 포지션 계산 (shift + ffill)
-    df['Position'] = df['Signal'].replace(0, np.nan).ffill().shift(1).fillna(0)
-
-    # 진입 플래그 및 진입 가격
-    df['Entry_Flag'] = (df['Signal'] != 0) & (df['Position'] == 0)
-    df['Entry_Price'] = pd.Series(
-        np.where(df['Entry_Flag'], df['close'], np.nan),
-        index=df.index
+    df["Bear_Div"] = pd.Series(
+        np.where(
+            (df["high"] == df["High_Lookback"]) & (df["RSI"] < df["RSI"].shift(1)),
+            1,
+            0,
+        ),
+        index=df.index,
     ).ffill()
 
-    # TP/SL 계산 (np.select → pd.Series)
-    df['TP'] = pd.Series(
-        np.select(
-            [df['Signal'] == 1, df['Signal'] == -1],
-            [df['Entry_Price'] * (1 + tp), df['Entry_Price'] * (1 - tp)],
-            default=np.nan
-        ),
-        index=df.index
+    # 매물대 활용 (VAL / VAH)
+    df["Below_Structure"] = (df["close"] < df["VAL"]).astype(bool)
+    df["Above_Structure"] = (df["close"] > df["VAH"]).astype(bool)
+
+    # 가격 교차 신호 (역추세 진입 방지)
+    df["Long_Cross"] = (df["close"] > df["VAL"]) & (~df["close"].shift(1) > df["VAL"])
+    df["Short_Cross"] = (df["close"] < df["VAH"]) & (~df["close"].shift(1) < df["VAH"])
+
+    # ADX 기반 동적 필터 (ADX < 25 기본, ADX가 낮을 경우 완화)
+    df["ADX_Threshold"] = np.where(df["ADX"] < 15, 20, adx_thresh)
+    df["Dynamic_ADX_Threshold"] = df["ADX_Threshold"].ffill()
+
+    # 최종 시그널
+    df["Long_Signal"] = (
+        df["Long_Cross"]
+        & df["Bull_Div"]
+        & (df["CVD"] > df["CVD_Signal"])
+        & (df["close"] > df["EMA"])
+        & (df["ADX"] < df["Dynamic_ADX_Threshold"])
     )
 
-    df['SL'] = pd.Series(
-        np.select(
-            [df['Signal'] == 1, df['Signal'] == -1],
-            [df['Entry_Price'] * (1 - sl), df['Entry_Price'] * (1 + sl)],
-            default=np.nan
-        ),
-        index=df.index
+    df["Short_Signal"] = (
+        df["Short_Cross"]
+        & df["Bear_Div"]
+        & (df["CVD"] < df["CVD_Signal"])
+        & (df["close"] < df["EMA"])
+        & (df["ADX"] < df["Dynamic_ADX_Threshold"])
     )
 
-    return df, {'tp': tp, 'sl': sl}
+    # NaN 제거 (필요 시)
+    df = df.dropna(subset=["Long_Signal", "Short_Signal"])
+
+    return df, {"tp": tp, "sl": sl}
