@@ -22,79 +22,87 @@ client = OpenAI(
     base_url="https://api.upstage.ai/v1" 
 )
 
-def test_code_syntax():
-    """AI가 짠 코드가 에러 없이 돌아가는지 가상 테스트 (자가 검증)"""
+def test_strategy_utility(df):
+    """
+    AI가 짠 전략의 실효성을 테스트합니다.
+    1. 문법 및 실행 에러 여부
+    2. 반환 형식 준수 여부
+    3. 🌟 실제 거래 신호(Signal) 발생 여부 (유연함의 핵심)
+    """
     try:
-        # 지표 계산을 위해 충분한 1000개 데이터 확보
-        raw_df = fetch_historical_data(limit=1000)
-        df = add_indicators(raw_df)
-        
-        # 동적 로드 및 리로드
         import strategies.strategy_candidate as s_cand
         importlib.reload(s_cand)
             
-        res = s_cand.apply_strategy(df)
+        res = s_cand.apply_strategy(df.copy())
         
-        # 🌟 반환 형식 검증: (df, params_dict)
+        # 형식 검증
         if not isinstance(res, tuple) or len(res) != 2:
-            return False, "반환 형식이 (df, params_dict)가 아닙니다."
+            return False, "반환 형식이 (df, params_dict)가 아닙니다. 반드시 튜플로 반환하세요."
+        
+        df_res, _ = res
+        # 거래 신호 검증: 0회면 실패로 간주하고 AI에게 다시 요청
+        signal_count = df_res['Signal'].abs().sum()
+        if signal_count == 0:
+            return False, "생성된 전략에서 거래 신호가 0회 발생했습니다. 진입 조건을 너무 빡빡하게 짰거나 논리 오류가 있습니다. 필터를 완화해서 다시 짜주세요."
+            
         return True, "Success"
     except Exception:
         return False, traceback.format_exc()
 
 def generate_and_correct_strategy():
-    """AI를 이용해 코드를 개선하고 에러 발생 시 스스로 수정"""
+    """AI를 이용해 코드를 개선하고, 결과가 부적합하면 처음부터 다시 짜게 함"""
     strategy_path = os.path.join(BASE_DIR, "strategies/strategy.py")
-    
     with open(strategy_path, "r", encoding="utf-8") as f:
         current_code = f.read()
         
     system_prompt = "너는 최고 수준의 가상화폐 퀀트 트레이더야. 답변은 반드시 파이썬 코드 블록(```python ... ```)만 출력해."
     
-    # 🌟 프롬프트 개선: '시퀀스(순서)' 중심의 로직 지시 (0회 거래 방지)
+    # 🌟 AI에게 주는 가이드라인 강화
     user_prompt = f"""
-    아래 매매 전략 코드(`strategy.py`)를 개선해줘.
+    아래 매매 전략 코드(`strategy.py`)를 처음부터 분석해서 개선해줘.
     ```python
     {current_code}
     ```
-    [개선 지침]
-    1. **진입 로직 (핵심)**: 단순히 한 캔들에서 동시에 일어나는 조건이 아니라 '흐름'을 타야 해.
-       - Long: 과거 10캔들 내에 가격이 VAL 아래로 내려간 적이 있고(rolling.max > 0), 현재 캔들이 VAL 위로 상향 돌파할 때 진입.
-       - Short: 과거 10캔들 내에 가격이 VAH 위로 올라간 적이 있고, 현재 캔들이 VAH 아래로 하향 돌파할 때 진입.
-    2. **필터**: CVD가 CVD_Signal을 골든크로스(Long) / 데드크로스(Short) 하는 수급 반전을 필수로 확인해.
-    3. **추세 방어**: ADX가 25 이상이면서 가격이 EMA_200과 너무 멀리(예: 2% 이상) 떨어져 있을 때는 역추세 진입을 자제해.
-    4. **거래 빈도**: 필터가 너무 빡빡해서 거래가 0회면 안 돼. 수익이 안 나더라도 일단 거래가 발생하도록 유연하게 짜줘.
-    5. **반환 형식**: 반드시 `return df, params` 형태여야 하며, params에는 'tp'(익절), 'sl'(손절) 비율이 포함되어야 해.
+    [중요 지침]
+    1. **필수 임포트**: 코드 최상단에 `import pandas as pd`, `import numpy as np`, `import pandas_ta as ta`를 반드시 포함해.
+    2. **유연한 타점**: 조건이 너무 까다로우면 거래가 안 일어나. '완벽한 타점'보다 '확률 높은 타점'을 노리고, 10일간 최소 5회 이상은 거래가 발생하도록 필터를 조절해.
+    3. **로직 개선**: 가격이 VAL 아래로 내려갔다 복귀할 때(Long), VAH 위로 올라갔다 복귀할 때(Short)를 핵심으로 하되, CVD 수급 반전을 확인해.
+    4. **반환 형식**: 반드시 `return df, params` 형태를 지켜.
     """
     
+    # 지표가 포함된 테스트용 데이터 준비
+    test_df = add_indicators(fetch_historical_data(limit=1000))
     candidate_path = os.path.join(BASE_DIR, "strategies/strategy_candidate.py")
     
-    for attempt in range(1, 4):
-        print(f"🤖 AI 전략 진화 시도 ({attempt}/3)...")
+    for attempt in range(1, 6): # 시도 횟수를 5회로 늘려 안정성 확보
+        print(f"🤖 AI 전략 유연 진화 시도 ({attempt}/5)...")
+        
         response = client.chat.completions.create(
             model="solar-pro3",
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-            temperature=0.3
+            temperature=0.4 # 창의성과 유연성을 위해 약간 높임
         )
         new_code = response.choices[0].message.content
         new_code_clean = new_code.split("```python")[1].split("```")[0].strip() if "```python" in new_code else new_code.strip()
         
-        # 후보 파일 저장
+        # 파일 저장
         with open(candidate_path, "w", encoding="utf-8") as f:
             f.write(new_code_clean)
             
-        is_valid, error_msg = test_code_syntax()
+        # 🌟 실효성 테스트 실행
+        is_valid, error_msg = test_strategy_utility(test_df)
         if is_valid:
-            print("✅ AI 코드 문법 및 로직 테스트 통과!")
+            print("✅ 전략 유효성 검사 통과! (거래 신호 확인됨)")
             return new_code_clean
         else:
-            print(f"⚠️ 에러 발생, AI에게 수정을 재요청합니다...")
-            user_prompt += f"\n\n[이전 코드 에러 로그]:\n{error_msg}\n위 에러를 해결해서 다시 짜줘."
+            print(f"⚠️ 전략 보완 필요: {error_msg}")
+            # AI에게 구체적인 실패 사유를 알려주며 다시 짜게 함
+            user_prompt += f"\n\n[이전 시도 실패 사유]:\n{error_msg}\n위 문제를 해결해서 다시 짜줘."
             
     return None
 
 def run_backtest_and_chart():
-    """후보 전략을 10일치 데이터(5000캔들)로 검증하고 차트 생성"""
+    """후보 전략을 10일치 데이터로 검증하고 차트 생성"""
     print("📊 10일 데이터 백테스트 및 리포트 생성 중...")
     raw_df = fetch_historical_data(limit=5000)
     df = add_indicators(raw_df)
@@ -103,15 +111,11 @@ def run_backtest_and_chart():
     importlib.reload(s_cand)
     df, params = s_cand.apply_strategy(df)
     
-    # 🌟 추가: 신호 개수 실시간 디버깅 로그
     l_count = df['Long_Signal'].sum() if 'Long_Signal' in df.columns else 0
     s_count = df['Short_Signal'].sum() if 'Short_Signal' in df.columns else 0
-    print(f"🔍 [디버깅] 포착된 신호 - Long: {l_count}회, Short: {s_count}회")
-    
-    if l_count + s_count == 0:
-        print("⚠️ 경고: 거래 신호가 0회입니다. AI가 너무 빡빡한 조건을 생성했을 가능성이 높습니다.")
+    print(f"🔍 [최종 확인] 신호 포착 - Long: {l_count}회, Short: {s_count}회")
 
-    # 백테스트 실행 (10배 레버리지 반영)
+    # 10배 레버리지 백테스트
     pf = vbt.Portfolio.from_signals(
         df['close'], 
         entries=df.get('Long_Signal', False), 
@@ -121,14 +125,11 @@ def run_backtest_and_chart():
         fees=0.0005, 
         freq='3m',
         leverage=10,        # 🌟 10배 레버리지 반영
-        leverage_fixed=True # 레버리지 고정 테스트
+        leverage_fixed=True
     )
     
-    # 리포트 저장 경로 확인
     report_dir = os.path.join(os.path.dirname(BASE_DIR), "data/reports")
     os.makedirs(report_dir, exist_ok=True)
-    
-    # 차트 이미지 저장
     pf.plot().write_image(f"{report_dir}/report.png", width=1200, height=800)
     
     return pf.total_return() * 100, pf.trades.count()
@@ -138,9 +139,8 @@ if __name__ == "__main__":
         res_pct, count = run_backtest_and_chart()
         
         print(f"📊 백테스트 결과: 수익률 {res_pct:.2f}%, 거래 횟수 {count}회")
-        print("💡 텔레그램에서 /report를 입력하여 차트를 확인하고 실전 반영 여부를 결정하세요.")
         
-        # 통계 데이터 저장 (admin_bot이 읽어감)
+        # 통계 데이터 저장
         stats_file = os.path.join(os.path.dirname(BASE_DIR), "data/reports/report_stats.txt")
         with open(stats_file, "w") as f:
             f.write(f"{res_pct:.2f},{count}")
