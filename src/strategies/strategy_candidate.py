@@ -1,106 +1,239 @@
 import pandas as pd
 import numpy as np
+import pandas_ta as ta
 
-def apply_strategy(df: pd.DataFrame, params_dict: dict) -> tuple[pd.DataFrame, dict]:
+def apply_strategy(df: pd.DataFrame, params_dict: dict = None):
     """
-    Improve the long/short divergence‑plus‑order‑flow strategy.
+    Enhanced divergence + structure breakout strategy with multiple filters.
 
-    - Uses existing indicator columns: VAL, VAH, POC, CVD, ADX, Squeeze_On.
-    - Adds EMA‑200 trend filter, ADX strength filter, and volatility‑filter.
-    - Enriches signals with entry price, target (TP) and stop (SL) levels.
-    - Returns the enriched DataFrame and the unchanged parameter dictionary.
+    Parameters
+    ----------
+    df : pd.DataFrame
+        OHLCV data that must contain (at minimum) the following columns:
+            - close, high, low, volume
+            - VAL, VAH, POC
+            - CVD, CVD_Signal
+            - ADX, Squeeze_On
+            - RSI (computed by pandas_ta)
+        Additional columns such as EMA_200, MACD, etc. will be computed on‑the‑fly
+        if they are missing.
+    params_dict : dict, optional
+        Strategy parameters. If omitted, sensible defaults are applied.
+        Keys and default values:
+            ema_len, tp, sl,
+            rsi_len, adx_len, atr_len, atr_mult,
+            volume_filter,
+            macd_fast, macd_slow, macd_sig,
+            use_squeeze, trend_filter_len, trend_filter_direction,
+            high_filter_len, low_filter_len,
+            confirm_rsi_thresh, confirm_adx_thresh, confirm_vol_thresh
+
+    Returns
+    -------
+    tuple
+        (df_with_signal, params_used)
+        df_with_signal contains all original columns plus the newly added signal columns.
     """
     # ------------------------------------------------------------------
-    # 1️⃣  Parameters & defaults
+    # 1. Parameter handling & defaults
     # ------------------------------------------------------------------
-    ema_len = params_dict.get("ema_len", 30)
-    tp      = params_dict.get("tp", 0.02)      # 2 % profit target
-    sl      = params_dict.get("sl", 0.015)    # 1.5 % stop loss
-    # ------------------------------------------------------------------
+    defaults = {
+        "ema_len": 30,
+        "tp": 0.02,          # profit‑target multiplier (e.g., 2 %)
+        "sl": 0.015,         # stop‑loss multiplier (e.g., 1.5 %)
+        "rsi_len": 14,
+        "adx_len": 14,
+        "atr_len": 14,
+        "atr_mult": 2,
+        "volume_filter": 1.0,
+        "macd_fast": 12,
+        "macd_slow": 26,
+        "macd_sig": 9,
+        "use_squeeze": True,
+        "trend_filter_len": 200,
+        "trend_filter_direction": "up",
+        "high_filter_len": 5,
+        "low_filter_len": 5,
+        "confirm_rsi_thresh": 50,
+        "confirm_adx_thresh": 20,
+        "confirm_vol_thresh": 1.0,
+    }
+    params = {**defaults, **(params_dict or {})}
+    ema_len = params["ema_len"]
+    tp = params["tp"]
+    sl = params["sl"]
+    rsi_len = params["rsi_len"]
+    adx_len = params["adx_len"]
+    atr_len = params["atr_len"]
+    atr_mult = params["atr_mult"]
+    volume_filter = params["volume_filter"]
+    macd_fast = params["macd_fast"]
+    macd_slow = params["macd_slow"]
+    macd_sig = params["macd_sig"]
+    use_squeeze = params["use_squeeze"]
+    trend_filter_len = params["trend_filter_len"]
+    trend_filter_direction = params["trend_filter_direction"]
+    high_filter_len = params["high_filter_len"]
+    low_filter_len = params["low_filter_len"]
+    confirm_rsi_thresh = params["confirm_rsi_thresh"]
+    confirm_adx_thresh = params["confirm_adx_thresh"]
+    confirm_vol_thresh = params["confirm_vol_thresh"]
 
     # ------------------------------------------------------------------
-    # 2️⃣  Long side – “VAL‑breakout + bullish divergence + trend”
+    # 2. Required column validation
     # ------------------------------------------------------------------
-    #   a) Price is still inside the VAL band (just below the upper edge)
+    required = [
+        "close", "high", "low", "volume",
+        "VAL", "VAH", "POC",
+        "CVD", "CVD_Signal",
+        "ADX", "Squeeze_On",
+        "RSI"
+    ]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    # ------------------------------------------------------------------
+    # 3. Dynamic lookback levels
+    # ------------------------------------------------------------------
+    df["Low_Lookback"] = df["low"].rolling(window=low_filter_len).min()
+    df["High_Lookback"] = df["high"].rolling(window=high_filter_len).max()
+
+    # ------------------------------------------------------------------
+    # 4. Trend filter – EMA_200 (optional EMA_50 for higher‑timeframe confirmation)
+    # ------------------------------------------------------------------
+    if "EMA_200" not in df.columns:
+        df["EMA_200"] = ta.ema(df["close"], length=trend_filter_len)
+
+    if "EMA_50" not in df.columns:
+        df["EMA_50"] = ta.ema(df["close"], length=50)
+
+    # ------------------------------------------------------------------
+    # 5. MACD components (bullish / bearish cross detection)
+    # ------------------------------------------------------------------
+    if "MACD" not in df.columns:
+        df["MACD"], df["MACD_Signal"], df["MACD_Hist"] = ta.macd(
+            df["close"],
+            fast=macd_fast,
+            slow=macd_slow,
+            signal=macd_sig,
+        )
+    if "MACD_Signal" not in df.columns:
+        raise KeyError("Column 'MACD_Signal' is required for MACD cross detection.")
+
+    df["MACD_Bull_Cross"] = (df["MACD"] > df["MACD_Signal"]) & (
+        df["MACD"].shift(1) <= df["MACD_Signal"].shift(1)
+    )
+    df["MACD_Bear_Cross"] = (df["MACD"] < df["MACD_Signal"]) & (
+        df["MACD"].shift(1) >= df["MACD_Signal"].shift(1)
+    )
+
+    # ------------------------------------------------------------------
+    # 6. ADX (trend‑strength) filter
+    # ------------------------------------------------------------------
+    if "ADX" not in df.columns:
+        df["ADX"] = ta.adx(df["high"], df["low"], df["close"], length=adx_len)
+    df["ADX_OK"] = df["ADX"] > confirm_adx_thresh
+
+    # ------------------------------------------------------------------
+    # 7. RSI threshold filter
+    # ------------------------------------------------------------------
+    df["RSI_OK_Long"] = df["RSI"] > confirm_rsi_thresh
+    df["RSI_OK_Short"] = df["RSI"] < confirm_rsi_thresh
+
+    # ------------------------------------------------------------------
+    # 8. Volume filter (relative to 20‑period average)
+    # ------------------------------------------------------------------
+    avg_vol = df["volume"].rolling(window=20).mean()
+    df["Vol_Filter"] = avg_vol * volume_filter
+    df["Volume_OK"] = df["volume"] >= df["Vol_Filter"]
+
+    # ------------------------------------------------------------------
+    # 9. Squeeze filter (if enabled)
+    # ------------------------------------------------------------------
+    if use_squeeze and "Squeeze_On" not in df.columns:
+        df["Squeeze_On"] = ta.squeeze(df["high"], df["low"], df["close"])
+    if "Squeeze_On" not in df.columns:
+        raise KeyError("Column 'Squeeze_On' is required for the strategy.")
+
+    # ------------------------------------------------------------------
+    # 10. Price‑structure breakout filter
+    # ------------------------------------------------------------------
     df["Below_Structure"] = df["close"] < (df["VAL"] * 1.001)
-
-    #   b) Bullish divergence:
-    #       low of the current bar ≤ rolling minimum of the last 5 lows,
-    #       RSI rises compared to the previous bar
-    df["Low_Lookback"]   = df["low"].rolling(window=5).min()
-    df["Bull_Div"]       = (df["low"] <= df["Low_Lookback"]) & (df["RSI"] > df["RSI"].shift(1))
-
-    #   c) CVD crossover: CVD is above its own signal line
-    df["Long_Signal"] = (
-        df["Below_Structure"] &
-        df["Bull_Div"] &
-        (df["CVD"] > df["CVD_Signal"])
-    )
-
-    #   d) Trend & ADX strength filter
-    df["Long_Signal"] = (
-        df["Long_Signal"] &
-        ((df["ADX"] <= 25) | (df["close"] >= df["EMA_200"]))
-    )
-
-    #   e) Volatility filter – only enter when the market is not squeezed
-    df["Long_Signal"] = df["Long_Signal"] & (df["Squeeze_On"] <= 0)
-
-    # ------------------------------------------------------------------
-    # 3️⃣  Short side – “VAH‑breakout + bearish divergence + trend”
-    # ------------------------------------------------------------------
-    #   a) Price is still inside the VAH band (just above the lower edge)
     df["Above_Structure"] = df["close"] > (df["VAH"] * 0.999)
 
-    #   b) Bearish divergence:
-    #       high of the current bar ≥ rolling maximum of the last 5 highs,
-    #       RSI falls compared to the previous bar
-    df["High_Lookback"]   = df["high"].rolling(window=5).max()
-    df["Bear_Div"]        = (df["high"] >= df["High_Lookback"]) & (df["RSI"] < df["RSI"].shift(1))
-
-    #   c) CVD cross‑under: CVD is below its own signal line
-    df["Short_Signal"] = (
-        df["Above_Structure"] &
-        df["Bear_Div"] &
-        (df["CVD"] < df["CVD_Signal"])
-    )
-
-    #   d) Trend & ADX strength filter
-    df["Short_Signal"] = (
-        df["Short_Signal"] &
-        ((df["ADX"] <= 25) | (df["close"] <= df["EMA_200"]))
-    )
-
-    #   e) Volatility filter – same as long side
-    df["Short_Signal"] = df["Short_Signal"] & (df["Squeeze_On"] <= 0)
+    # ------------------------------------------------------------------
+    # 11. Divergence detection
+    # ------------------------------------------------------------------
+    df["Bull_Div"] = (df["low"] <= df["Low_Lookback"]) & (df["RSI"] > df["RSI"].shift(1))
+    df["Bear_Div"] = (df["high"] >= df["High_Lookback"]) & (df["RSI"] < df["RSI"].shift(1))
 
     # ------------------------------------------------------------------
-    # 4️⃣  Combine signals & forward‑fill NaNs
+    # 12. Trend filter based on EMA_200 (or EMA_50) direction
+    # ------------------------------------------------------------------
+    if trend_filter_direction == "up":
+        df["Trend_OK"] = df["close"] >= df["EMA_200"]
+    elif trend_filter_direction == "down":
+        df["Trend_OK"] = df["close"] <= df["EMA_200"]
+    else:
+        df["Trend_OK"] = True  # fallback
+
+    # ------------------------------------------------------------------
+    # 13. Combine primary long and short conditions
+    # ------------------------------------------------------------------
+    long_cond = (
+        df["Below_Structure"]
+        & df["Bull_Div"]
+        & df["CVD"] > df["CVD_Signal"]
+        & df["Trend_OK"]
+        & df["MACD_Bull_Cross"]
+        & df["ADX_OK"]
+        & df["RSI_OK_Long"]
+        & df["Volume_OK"]
+        & (df["Squeeze_On"] == False if use_squeeze else True)
+    )
+    df["Long_Signal"] = long_cond
+
+    short_cond = (
+        df["Above_Structure"]
+        & df["Bear_Div"]
+        & df["CVD"] < df["CVD_Signal"]
+        & df["Trend_OK"]
+        & df["MACD_Bear_Cross"]
+        & df["ADX_OK"]
+        & df["RSI_OK_Short"]
+        & df["Volume_OK"]
+        & (df["Squeeze_On"] == False if use_squeeze else True)
+    )
+    df["Short_Signal"] = short_cond
+
+    # ------------------------------------------------------------------
+    # 14. Assign unified signal (1 = long, -1 = short, 0 = neutral)
     # ------------------------------------------------------------------
     df["Signal"] = np.where(df["Long_Signal"], 1,
-                np.where(df["Short_Signal"], -1, 0))
+                            np.where(df["Short_Signal"], -1, 0))
 
     # ------------------------------------------------------------------
-    # 5️⃣  Entry‑price & risk‑management columns (TP / SL)
+    # 15. Volatility‑based stop & target levels (ATR‑scaled)
     # ------------------------------------------------------------------
-    #   a) Only consider the first bar where a signal appears
-    df["EntryPrice"] = df["Signal"].shift(1) * df["close"]
+    if "ATR" not in df.columns:
+        df["ATR"] = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
 
-    #   b) Target = entry × (1 + tp), Stop = entry × (1 – sl)
-    df["Target"] = df["EntryPrice"] * (1 + tp)
-    df["Stop"]  = df["EntryPrice"] * (1 - sl)
+    df["Long_Stop"] = df["EMA_200"] - df["ATR"] * atr_mult * sl
+    df["Short_Stop"] = df["EMA_200"] + df["ATR"] * atr_mult * sl
 
-    #   c) Binary flags for when TP / SL are hit
-    df["TP"] = (df["close"] >= df["Target"]) & (df["Signal"] == 1)
-    df["SL"] = (df["close"] <= df["Stop"])  & (df["Signal"] == 1)
-
-    #   d) Remove rows that are already closed (keep only open positions)
-    df["Position"] = df["Signal"] * df["Signal"].shift(1)   # 1 → 1, -1 → -1, 0 → 0
-    df["Position"] = df["Position"].fillna(0)              # fill NaNs (first bar)
-    df["Open"] = df["Position"] == df["Signal"]
-    df = df[df["Open"]]                                   # keep only live signals
+    df["Long_TP"] = df["EMA_200"] + df["ATR"] * atr_mult * tp
+    df["Short_TP"] = df["EMA_200"] - df["ATR"] * atr_mult * tp
 
     # ------------------------------------------------------------------
-    # 6️⃣  Return enriched DataFrame + unchanged parameters
+    # 16. Adjust signal when stop or profit target is hit
     # ------------------------------------------------------------------
-    return df, params_dict
+    df["Signal"] = np.where(df["close"] <= df["Long_Stop"], 0, df["Signal"])
+    df["Signal"] = np.where(df["close"] >= df["Long_TP"], 0, df["Signal"])
+    df["Signal"] = np.where(df["close"] >= df["Short_TP"], 0, df["Signal"])
+    df["Signal"] = np.where(df["close"] >= df["Short_Stop"], 0, df["Signal"])
+
+    # ------------------------------------------------------------------
+    # 17. Return enriched dataframe + used parameters
+    # ------------------------------------------------------------------
+    return df, params
