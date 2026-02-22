@@ -12,12 +12,14 @@ load_dotenv()
 client = OpenAI(api_key=os.getenv('UPSTAGE_API_KEY'), base_url="https://api.upstage.ai/v1")
 
 def test_code_syntax():
+    """AI가 짠 코드를 임포트해서 실제로 돌려보는 테스트"""
     try:
         df = add_indicators(fetch_historical_data(limit=1000))
         import strategies.strategy_candidate as s_cand
         importlib.reload(s_cand)
+        
+        # [중요] (df, params) 튜플 반환 형식을 정확히 언팩함
         res = s_cand.apply_strategy(df)
-        # 반환 형식이 (df, dict)인지 엄격히 체크
         if not isinstance(res, tuple) or len(res) != 2:
             raise ValueError("반환 형식이 반드시 (df, params) 튜플이어야 합니다.")
         return True, "Success"
@@ -29,6 +31,7 @@ def generate_and_correct_strategy():
     with open(strategy_path, "r", encoding="utf-8") as f:
         current_code = f.read()
         
+    # AI가 헛소리(잘못된 문법) 하지 않도록 지시사항 강화
     user_prompt = f"""
     아래 매매 전략 코드를 개선해줘.
     ```python
@@ -36,9 +39,9 @@ def generate_and_correct_strategy():
     ```
     [💡 필수 준수 사항]
     1. 파일 상단에 반드시 `import pandas_ta as ta`와 `import numpy as np`를 포함해.
-    2. 함수 이름은 `apply_strategy(df, ema_len=30)`으로 작성해.
-    3. 마지막 반환 값은 반드시 `return df, {{'tp': 0.02, 'sl': 0.015}}` 형태여야 해.
-    4. CVD, ADX, EMA_200 지표를 사용하여 리스크 필터를 강화해.
+    2. 함수 이름은 `apply_strategy(df, ema_len=30)`으로 유지해.
+    3. 이미 indicators.py에서 계산된 'CVD', 'CVD_Signal', 'VAL', 'VAH', 'ADX' 컬럼을 활용해. (새로 계산하려고 ta.val() 같은 없는 함수 쓰지 마!)
+    4. 마지막 반환 값은 반드시 `return df, {{'tp': 0.02, 'sl': 0.015}}` 형태여야 해.
     """
     
     for attempt in range(1, 4):
@@ -53,7 +56,7 @@ def generate_and_correct_strategy():
         is_valid, error_msg = test_code_syntax()
         if is_valid: return new_code_clean
         else:
-            print(f"⚠️ 재수정 시도 중..."); user_prompt += f"\n\n오류 내용: {error_msg}"
+            print(f"⚠️ 문법 에러 발생. 재수정 시도 중..."); user_prompt += f"\n\n오류 내용: {error_msg}"
     return None
 
 def run_backtest_and_chart():
@@ -61,8 +64,12 @@ def run_backtest_and_chart():
     import strategies.strategy_candidate as s_cand
     importlib.reload(s_cand)
     df, d_params = s_cand.apply_strategy(df)
-    pf = vbt.Portfolio.from_signals(df['close'], entries=df.get('Long_Signal', False), short_entries=df.get('Short_Signal', False), 
-                                    tp_stop=d_params.get('tp', 0.02), sl_stop=d_params.get('sl', 0.015), fees=0.0005, slippage=0.001, freq='3m')
+    
+    pf = vbt.Portfolio.from_signals(
+        df['close'], entries=df.get('Long_Signal', False), short_entries=df.get('Short_Signal', False),
+        tp_stop=d_params.get('tp', 0.02), sl_stop=d_params.get('sl', 0.015), 
+        fees=0.0005, slippage=0.001, freq='3m'
+    )
     pf.plot().write_image("data/reports/report.png", width=1200, height=800)
     return pf.total_return() * 100, pf.trades.count()
 

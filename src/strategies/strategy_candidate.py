@@ -1,88 +1,48 @@
 import pandas as pd
 import pandas_ta as ta
-import numpy as np   # 향후 수치 연산에 활용 가능
+import numpy as np
 
 def apply_strategy(df: pd.DataFrame, ema_len: int = 30) -> tuple[pd.DataFrame, dict]:
     """
-    매매 전략 적용 함수
-    - ATR, EMA_200, ADX, RSI, VAL, VAH, CVD, CVD_Signal 등 주요 지표를 계산
-    - Bull/Bear divergence와 CVD divergence를 이용해 롱/숏 시그널 생성
-    - ADX와 EMA_200을 리스크 필터로 사용
-    - 최종 반환값은 고정된 TP/SL (tp=0.02, sl=0.015) 로 고정
+    개선된 매매 전략
+    - indicators.py에서 이미 계산된 VAL, VAH, CVD, ADX, EMA_200을 활용
+    - 다이버전스와 수급(CVD)을 결합하여 시그널 생성
+    - ADX와 EMA_200을 리스크 필터로 사용하여 역추세 진입 방지
     """
-    # -------------------------------------------------
-    # 1️⃣ 기본 지표 계산
-    # -------------------------------------------------
-    # ATR (14일)
-    df['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=14).atr
+    # 1. 진입용 EMA 계산 (기존 컬럼과 겹치지 않게 'EMA_Signal'로 명명)
+    df['EMA_Signal'] = ta.ema(df['close'], length=ema_len)
 
-    # EMA_200 (200일)
-    df['EMA_200'] = ta.ema(df['close'], length=200).ema
-
-    # ADX (14일)
-    adx_len = 14
-    df['ADX'] = ta.adx(df['high'], df['low'], df['close'], length=adx_len).adx
-
-    # RSI (14일)
-    rsi_len = 14
-    df['RSI'] = ta.rsi(df['close'], length=rsi_len).rsi
-
-    # Value‑Area Low / High (VAL, VAH) (14일)
-    val_len = 14
-    df['VAL'] = ta.val(df['high'], df['low'], df['close'], length=val_len).val
-    df['VAH'] = ta.vah(df['high'], df['low'], df['close'], length=val_len).vah
-
-    # CVD (Commodity Volume Divergence) 및 CVD_Signal (14일)
-    cvd_len = 14
-    df['CVD'] = ta.cvd(df['close'], df['volume'], length=cvd_len).cvd
-    df['CVD_Signal'] = ta.cvd(df['close'], df['volume'], length=cvd_len).cvd_signal
-
-    # -------------------------------------------------
-    # 2️⃣ 구조 기반 시그널 (Low_3 / High_3)
-    # -------------------------------------------------
-    df['Low_3'] = df['low'].rolling(3).min()
-    df['High_3'] = df['high'].rolling(3).max()
-
+    # 2. 구조 기반 상태 정의 (VAL, VAH는 indicators.py에 이미 있음)
     df['Below_Structure'] = df['close'] < df['VAL']
     df['Above_Structure'] = df['close'] > df['VAH']
 
+    # 3. 다이버전스 로직 (Low_3 / High_3 활용)
+    df['Low_3'] = df['low'].rolling(3).min()
+    df['High_3'] = df['high'].rolling(3).max()
+    
     # Bull / Bear divergence
     df['Bull_Div'] = (df['low'] == df['Low_3']) & (df['RSI'] > df['RSI'].shift(1))
     df['Bear_Div'] = (df['high'] == df['High_3']) & (df['RSI'] < df['RSI'].shift(1))
 
-    # -------------------------------------------------
-    # 3️⃣ 롱 / 숏 시그널 생성
-    # -------------------------------------------------
-    # EMA (전략 파라미터)
-    df['EMA'] = ta.ema(df['close'], length=ema_len).ema
-
-    # 롱 시그널
+    # 4. 롱 / 숏 시그널 생성
+    # 롱 시그널: 저평가 구간 + 상승 다이버전스 + 수급 개선 + 단기 이평 상회
+    # 리스크 필터: 추세가 약하거나(ADX <= 25) 장기 추세가 상승(EMA_200 위)일 때만 허용
     df['Long_Signal'] = (
         df['Below_Structure'] &
         df['Bull_Div'] &
         (df['CVD'] > df['CVD_Signal']) &
-        (df['close'] > df['EMA'])
+        (df['close'] > df['EMA_Signal'])
     ) & ((df['ADX'] <= 25) | (df['close'] >= df['EMA_200']))
 
-    # 숏 시그널
+    # 숏 시그널: 고평가 구간 + 하락 다이버전스 + 수급 악화 + 단기 이평 하회
+    # 리스크 필터: 추세가 약하거나 장기 추세가 하락(EMA_200 아래)일 때만 허용
     df['Short_Signal'] = (
         df['Above_Structure'] &
         df['Bear_Div'] &
         (df['CVD'] < df['CVD_Signal']) &
-        (df['close'] < df['EMA'])
+        (df['close'] < df['EMA_Signal'])
     ) & ((df['ADX'] <= 25) | (df['close'] <= df['EMA_200']))
 
-    # -------------------------------------------------
-    # 4️⃣ 동적 TP/SL 계산 (예시) – 실제 반환값은 고정값으로 교체
-    # -------------------------------------------------
-    # 마지막 ATR와 종가를 이용해 TP/SL을 구하지만, 요구사항에 따라
-    # 최종 반환값은 고정된 0.02 / 0.015 로 강제합니다.
-    last_atr = df['ATR'].iloc[-1] if 'ATR' in df.columns else 0.01
-    last_close = df['close'].iloc[-1]
-    d_tp = (last_atr * 2.0) / last_close
-    d_sl = (last_atr * 1.5) / last_close
-
-    # -------------------------------------------------
-    # 5️⃣ 최종 반환 (고정 TP/SL)
-    # -------------------------------------------------
+    # 5. 최종 반환 (고정 TP/SL)
+    # 시스템 규격에 맞춰 (df, params_dict) 형태 유지
     return df, {'tp': 0.02, 'sl': 0.015}

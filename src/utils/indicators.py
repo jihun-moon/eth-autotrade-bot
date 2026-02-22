@@ -3,14 +3,15 @@ import pandas_ta as ta
 import numpy as np
 
 def add_indicators(df):
-    # 1. 기본 지표
+    # 1. 기본 지표 및 이평선
     df['RSI'] = ta.rsi(df['close'], length=14)
     df['EMA_200'] = ta.ema(df['close'], length=200)
     
+    # ADX (추세 강도) - strategy.py의 필터로 사용됨
     adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
     df['ADX'] = adx_df['ADX_14'] if adx_df is not None else 0
 
-    # 2. 볼륨 프로파일 (VAL, VAH)
+    # 2. 볼륨 프로파일 (VAL, VAH) - 매물대 경계 계산
     lookback = 480
     if len(df) >= lookback:
         window = df.iloc[-lookback:]
@@ -25,8 +26,12 @@ def add_indicators(df):
             if lv >= rv: current_v += lv; l -= 1
             else: current_v += rv; r += 1
         df['VAL'], df['VAH'] = bin_edges[l], bin_edges[r+1]
+    else:
+        # 데이터가 부족할 경우 에러 방지용 기본값
+        df['VAL'], df['VAH'] = df['close'] * 0.99, df['close'] * 1.01
 
-    # 3. CVD (Cumulative Volume Delta) - AI 전략의 핵심 재료
+    # 3. CVD (Cumulative Volume Delta) - 수급 지표 추가
+    # 가격 상승 시 거래량 +, 하락 시 -로 계산하여 누적
     df['vol_delta'] = np.where(df['close'] >= df['close'].shift(1), df['volume'], -df['volume'])
     df['CVD'] = df['vol_delta'].cumsum()
     df['CVD_Signal'] = ta.ema(df['CVD'], length=20)
