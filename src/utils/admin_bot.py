@@ -3,7 +3,7 @@ import shutil
 import asyncio
 import logging
 import sys
-import ccxt  # 🌟 실시간 가격 조회를 위해 추가
+import ccxt  # 🌟 실시간 가격 조회를 위한 공용 API 활용
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -13,35 +13,36 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 필수 모듈 임포트
-from core.db_manager import SessionLocal, ActivePosition
-from core.trader import get_exchange
-
-# AI 진화 엔진 임포트
 try:
+    from core.db_manager import SessionLocal, ActivePosition
+    from core.trader import get_exchange
     from research.evolve import generate_and_correct_strategy, run_backtest_and_chart
 except ImportError:
+    # 실행 환경에 따른 2차 경로 방어
+    from src.core.db_manager import SessionLocal, ActivePosition
+    from src.core.trader import get_exchange
     from src.research.evolve import generate_and_correct_strategy, run_backtest_and_chart
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-# 🌟 전역 변수 설정 (NameError 방지)
+# 🌟 전역 변수 설정 (NameError 방지 및 레버리지 고정)
 STRAT_DIR = "src/strategies"
 REPORT_DIR = "data/reports"
-LEVERAGE = 10  # main.py와 동일하게 설정
+LEVERAGE = 10  # 10배 레버리지 설정
 
 logger = logging.getLogger("AdminBot")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/start 명령어 안내"""
+    """/start 명령어: 비서 메뉴 안내"""
     if str(update.effective_chat.id) != str(CHAT_ID): return
 
     welcome_msg = (
         "안녕하세요 보스! Bottom-Scanner 관리 비서입니다. 🤖\n\n"
         "👉 /status : 현재 포지션 및 실시간 수익률 확인\n"
         "👉 /evolve : AI에게 새로운 전략 진화 명령\n"
-        "👉 /report : 후보 전략 리포트 확인 및 결재\n"
+        "👉 /report : 최근 생성된 후보 전략 리포트 확인\n"
         "👉 /start  : 메뉴 안내 다시 보기"
     )
     await update.message.reply_text(welcome_msg)
@@ -63,7 +64,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # 🌟 API 키가 없는 경우, 공용(Public) API로 전환하여 가격만 가져옴
         if not exchange:
-            logger.info("🔒 API 키가 없어 공용 API 모드로 실시간 가격을 조회합니다.")
+            logger.info("🔒 API 키 미설정으로 공용 API 모드로 가격을 조회합니다.")
             exchange = ccxt.binance({'enableRateLimit': True})
             
         # 실시간 가격(Ticker) 가져오기 (비동기 처리)
@@ -91,45 +92,54 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
 async def evolve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """AI 전략 진화 프로세스 시작"""
+    """/evolve 명령어: AI 전략 진화 프로세스 시작"""
     if str(update.effective_chat.id) != str(CHAT_ID): return
-    status_msg = await update.message.reply_text("🤖 AI 전략 진화를 시작합니다...")
+    status_msg = await update.message.reply_text("🤖 AI 전략 진화를 시작합니다. (약 1~2분 소요)...")
 
     try:
+        # 🌟 진화 로직 비동기 실행
         new_code = await asyncio.to_thread(generate_and_correct_strategy)
         if new_code:
             res_pct, count = await asyncio.to_thread(run_backtest_and_chart)
             stats_file = f"{REPORT_DIR}/report_stats.txt"
             with open(stats_file, "w") as f:
                 f.write(f"{res_pct:.2f},{count}")
+            
             await status_msg.edit_text(f"🎉 진화 성공!\n📈 수익률: {res_pct:.2f}% | 거래: {count}회")
             await send_report_command(update, context)
         else:
-            await status_msg.edit_text("❌ 전략 생성 실패.")
+            await status_msg.edit_text("❌ 유효한 전략 생성에 실패했습니다.")
     except Exception as e:
-        await status_msg.edit_text(f"⚠️ 에러: {str(e)}")
+        await status_msg.edit_text(f"⚠️ 에러 발생: {str(e)}")
 
 async def send_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """리포트 차트와 결재 버튼 전송"""
+    """/report 명령어: 리포트 차트와 결재 버튼 전송"""
     if str(update.effective_chat.id) != str(CHAT_ID): return 
     report_image = f"{REPORT_DIR}/report.png"
     candidate_file = f"{STRAT_DIR}/strategy_candidate.py"
 
     if not os.path.exists(report_image) or not os.path.exists(candidate_file):
-        await update.message.reply_text("📦 대기 중인 후보 전략이 없습니다.")
+        await update.message.reply_text("📦 대기 중인 후보 전략이 없습니다. /evolve를 먼저 실행하세요.")
         return
 
     keyboard = [
         [InlineKeyboardButton("🚀 실전 Live 투입", callback_data="DEPLOY_LIVE")],
         [InlineKeyboardButton("👻 섀도우 모드 투입", callback_data="DEPLOY_SHADOW")],
-        [InlineKeyboardButton("⏪ 롤백", callback_data="ROLLBACK")],
-        [InlineKeyboardButton("❌ 반려", callback_data="REJECT")]
+        [InlineKeyboardButton("⏪ 이전 코드로 롤백", callback_data="ROLLBACK")],
+        [InlineKeyboardButton("❌ 반려 및 삭제", callback_data="REJECT")]
     ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     with open(report_image, "rb") as photo:
-        await context.bot.send_photo(chat_id=CHAT_ID, photo=photo, caption="🤖 AI 전략 개선 제안서", reply_markup=InlineKeyboardMarkup(keyboard))
+        await context.bot.send_photo(
+            chat_id=CHAT_ID, 
+            photo=photo, 
+            caption="🤖 **AI 전략 개선 제안서**\n보스, 위 전략을 실전에 반영할까요?",
+            reply_markup=reply_markup
+        )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """버튼 클릭 처리"""
+    """버튼 클릭 처리 로직"""
     query = update.callback_query
     if str(update.effective_chat.id) != str(CHAT_ID): return
     await query.answer() 
@@ -143,20 +153,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if query.data == "DEPLOY_LIVE":
             shutil.copyfile(live_strat, backup_strat)
             shutil.copyfile(candidate_strat, live_strat)
-            await query.edit_message_caption("✅ 실전 투입 완료!")
+            await query.edit_message_caption("✅ **결재 승인** 실전 전략이 교체되었습니다.")
         elif query.data == "DEPLOY_SHADOW":
             shutil.copyfile(candidate_strat, shadow_strat)
-            await query.edit_message_caption("👻 섀도우 모드 가동!")
+            await query.edit_message_caption("👻 **섀도우 가동** 검증 모드에서 성과를 추적합니다.")
         elif query.data == "ROLLBACK":
-            shutil.copyfile(backup_strat, live_strat)
-            await query.edit_message_caption("⏪ 롤백 완료!")
+            if os.path.exists(backup_strat):
+                shutil.copyfile(backup_strat, live_strat)
+                await query.edit_message_caption("⏪ **롤백 완료** 이전 버전으로 복구되었습니다.")
+            else:
+                await query.edit_message_caption("⚠️ 백업 파일이 없습니다.")
         elif query.data == "REJECT":
             if os.path.exists(candidate_strat): os.remove(candidate_strat)
-            await query.edit_message_caption("❌ 반려되었습니다.")
+            await query.edit_message_caption("❌ **반려** 후보 전략이 삭제되었습니다.")
     except Exception as e:
-        await query.edit_message_caption(f"⚠️ 오류: {str(e)}")
+        await query.edit_message_caption(f"⚠️ 처리 중 오류: {str(e)}")
 
 if __name__ == "__main__":
+    # 필수 폴더 생성
     os.makedirs(STRAT_DIR, exist_ok=True)
     os.makedirs(REPORT_DIR, exist_ok=True)
 
@@ -168,5 +182,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("evolve", evolve_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     
-    print("👔 Bottom-Scanner 관리 비서 가동 중 (Public API 지원)...")
+    print("👔 Bottom-Scanner 관리 비서 가동 중 (실시간 가격 조회 지원)...")
     app.run_polling()
