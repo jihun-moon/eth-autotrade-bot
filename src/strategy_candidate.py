@@ -1,40 +1,50 @@
-# strategy_candidate.py
-import importlib
-import logging
-from typing import Dict, Any
+import pandas_ta as ta
 
-class StrategyCandidate:
+def apply_strategy(df, ema_len=30):
     """
-    A generic placeholder for a trading strategy.
-    """
-    def __init__(self, name: str, parameters: Dict[str, Any]):
-        self.name = name
-        self.parameters = parameters
-        self.logger = logging.getLogger(self.name)
-
-    def run(self) -> Dict[str, Any]:
-        """
-        Execute the strategy logic.
-        Returns a dictionary with status and result.
-        """
-        self.logger.info(f"Running strategy '{self.name}' with parameters {self.parameters}")
-        # Placeholder for actual trading logic
-        return {"status": "success", "result": "placeholder"}
-
-def test_code_syntax():
-    """
-    Reload the module and test the StrategyCandidate class.
-    """
-    # Reload the current module to simulate dynamic updates
-    importlib.reload(__import__('strategy_candidate'))
+    기존 롱/숏 진입 로직에 ADX와 EMA_200 기반 리스크 관리 필터를 추가한 전략 함수.
     
-    # Instantiate and run a test candidate
-    candidate = StrategyCandidate(name="TestStrategy", parameters={"param1": 10, "param2": "value"})
-    result = candidate.run()
+    - 강한 상승 추세(ADX > 25 & close > EMA_200)에서는 숏 진입을 차단.
+    - 강한 하락 추세(ADX > 25 & close < EMA_200)에서는 롱 진입을 차단.
+    - 기존 VAL/VAH, 다이버전스(Bull_Div/Bear_Div) 로직은 그대로 유지.
+    """
     
-    print("Test result:", result)
-
-if __name__ == "__main__":
-    # Configure logging for the test
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    test_code_syntax()
+    # ==============================
+    # 1. 롱(Long) 타점 전략
+    # ==============================
+    df['Below_Structure'] = df['close'] < df['VAL']
+    df['Low_3'] = df['low'].rolling(3).min()
+    df['Bull_Div'] = (df['low'] == df['Low_3']) & (df['RSI'] > df['RSI'].shift(1))
+    
+    # 기존 롱 진입 조건
+    long_base = (
+        df['Below_Structure'] &
+        df['Bull_Div'] &
+        (df['CVD'] > df['CVD_Signal']) &
+        (df['close'] > ta.ema(df['close'], length=ema_len))
+    )
+    
+    # 강한 하락 추세(ADX > 25 & close < EMA_200)에서는 롱 진입 차단
+    strong_downtrend = (df['ADX'] > 25) & (df['close'] < df['EMA_200'])
+    df['Long_Signal'] = long_base & ~strong_downtrend
+    
+    # ==============================
+    # 2. 숏(Short) 타점 전략
+    # ==============================
+    df['Above_Structure'] = df['close'] > df['VAH']
+    df['High_3'] = df['high'].rolling(3).max()
+    df['Bear_Div'] = (df['high'] == df['High_3']) & (df['RSI'] < df['RSI'].shift(1))
+    
+    # 기존 숏 진입 조건
+    short_base = (
+        df['Above_Structure'] &
+        df['Bear_Div'] &
+        (df['CVD'] < df['CVD_Signal']) &
+        (df['close'] < ta.ema(df['close'], length=ema_len))
+    )
+    
+    # 강한 상승 추세(ADX > 25 & close > EMA_200)에서는 숏 진입 차단
+    strong_uptrend = (df['ADX'] > 25) & (df['close'] > df['EMA_200'])
+    df['Short_Signal'] = short_base & ~strong_uptrend
+    
+    return df
