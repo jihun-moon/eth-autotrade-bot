@@ -4,75 +4,86 @@ import pandas_ta as ta
 
 def apply_strategy(df, ema_len=30, tp=0.02, sl=0.015):
     """
-    Improved SMC + CVD + trend filter strategy.
-    - Core: VAL/VAH bounce entry.
-    - Supply‑demand filter: CVD cross with CVD_Signal.
-    - Trend defense: block entries when ADX > 25 and price deviates > 2% from EMA_200.
-    Returns df with entry/exit signals and params dict.
+    개선된 다이버전스 Reversal 전략
+    - 가격이 VAL/VAH를 이탈 후 복귀하는 순간을 진입 신호로 활용
+    - CVD와 ADX를 이용한 수급·추세 필터 적용
+    - 0회 거래 현상 방지를 위해 진입 조건을 유연하게 설계
     """
-    # Required columns
-    required = ['VAL', 'VAH', 'POC', 'CVD', 'CVD_Signal', 'ADX', 'EMA_200']
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
+    # 필수 컬럼 존재 여부 확인 및 필요 시 계산
+    required = ['close', 'low', 'high', 'RSI', 'VAL', 'VAH', 'CVD', 'CVD_Signal', 'ADX', 'EMA_200']
+    for col in required:
+        if col not in df.columns:
+            if col == 'RSI':
+                df[col] = ta.rsi(df['close'], length=14)
+            if col == 'EMA_200':
+                df[col] = ta.ema(df['close'], length=200)
 
-    # Compute EMA_200 if not present
-    if 'EMA_200' not in df.columns:
-        df['EMA_200'] = df['close'].ta.ema(200)
+    # VAL/VAH 이탈·복귀를 위한 버퍼 (0.1%)
+    val_low  = df['VAL'] * 1.001   # VAL 아래 이탈
+    vah_high = df['VAH'] * 0.999   # VAH 위 이탈
 
-    # Compute ADX if not present
-    if 'ADX' not in df.columns:
-        df['ADX'] = df['close'].ta.adx(14)
+    # ---------- Long 진입 ----------
+    # 1) VAL 아래로 이탈
+    df['Long_Below'] = df['close'] <= val_low
+    df['Long_Below_Cross'] = df['Long_Below'] & (~df['Long_Below'].shift(1))
 
-    # Compute CVD_Signal if not present
-    if 'CVD_Signal' not in df.columns:
-        df['CVD_Signal'] = df['CVD'].ta.sma(10)
+    # 2) VAL 위로 복귀
+    df['Long_Above'] = df['close'] > val_low
+    df['Long_Above_Cross'] = df['Long_Above'] & (~df['Long_Above'].shift(1))
 
-    # ---------- VAL bounce detection ----------
-    df['VAL_cross_down'] = (df['close'] < df['VAL']) & (df['close'].shift(1) >= df['VAL'])
-    df['VAL_cross_up']   = (df['close'] > df['VAL']) & (df['close'].shift(1) <= df['VAL'])
-    df['VAL_bounce']     = df['VAL_cross_up'] & df['VAL_cross_down'].shift(1)
+    df['Long_Cross'] = df['Long_Below_Cross'] & df['Long_Above_Cross']
 
-    # ---------- VAH bounce detection ----------
-    df['VAH_cross_up']   = (df['close'] > df['VAH']) & (df['close'].shift(1) <= df['VAH'])
-    df['VAH_cross_down'] = (df['close'] < df['VAH']) & (df['close'].shift(1) >= df['VAH'])
-    df['VAH_bounce']     = df['VAH_cross_down'] & df['VAH_cross_up'].shift(1)
+    # ---------- Short 진입 ----------
+    # 1) VAH 위로 이탈
+    df['Short_Above'] = df['close'] >= vah_high
+    df['Short_Above_Cross'] = df['Short_Above'] & (~df['Short_Above'].shift(1))
 
-    # ---------- CVD cross detection ----------
+    # 2) VAH 아래로 복귀
+    df['Short_Below'] = df['close'] < vah_high
+    df['Short_Below_Cross'] = df['Short_Below'] & (~df['Short_Below'].shift(1))
+
+    df['Short_Cross'] = df['Short_Above_Cross'] & df['Short_Below_Cross']
+
+    # ---------- 수급 필터 ----------
+    # CVD 골든크로스 / 데드크로스
     df['CVD_cross_up']   = (df['CVD'] > df['CVD_Signal']) & (df['CVD'].shift(1) <= df['CVD_Signal'])
     df['CVD_cross_down'] = (df['CVD'] < df['CVD_Signal']) & (df['CVD'].shift(1) >= df['CVD_Signal'])
 
-    # ---------- Trend defense ----------
-    df['ADX_trend'] = df['ADX'] > 25
-    df['price_dist'] = np.abs(df['close'] - df['EMA_200']) / df['EMA_200']
-    df['trend_defense'] = ~(df['ADX_trend'] & (df['price_dist'] > 0.02))
+    # ---------- ADX·EMA_200 거리 필터 ----------
+    # ADX >= 25
+    df['ADX_Filter'] = df['ADX'] >= 25
 
-    # ---------- Entry signals ----------
-    long_entry = df['VAL_bounce'] & df['CVD_cross_up'] & df['trend_defense']
-    short_entry = df['VAH_bounce'] & df['CVD_cross_down'] & df['trend_defense']
+    # EMA_200과의 거리 (2% 기준)
+    price_diff = df['close'] - df['EMA_200']
+    df['Price_Far'] = price_diff.abs() > df['close'] * 0.02
 
-    df['Signal'] = np.where(long_entry, 1,
-                            np.where(short_entry, -1, 0))
+    # 역추세 진입 방지 (가격이 EMA_200에서 멀리 떨어져 있을 때)
+    df['ADX_Filter_Long']  = df['ADX_Filter'] & (~df['Price_Far'])
+    df['ADX_Filter_Short'] = df['ADX_Filter'] & (~df['Price_Far'])
 
-    # ---------- Position ----------
-    df['Position'] = df['Signal'].shift(1).fillna(0)
+    # ---------- 최종 신호 ----------
+    df['Long_Signal']  = df['Long_Cross'] & df['CVD_cross_up'] & df['ADX_Filter_Long']
+    df['Short_Signal'] = df['Short_Cross'] & df['CVD_cross_down'] & df['ADX_Filter_Short']
 
-    # ---------- Entry flag (only when exiting zero position) ----------
-    df['Entry_Flag'] = (df['Signal'] != 0) & (df['Position'] == 0)
+    # 시스템 연동
+    df['Signal'] = np.where(df['Long_Signal'], 1,
+                     np.where(df['Short_Signal'], -1, 0))
 
-    # ---------- Entry price ----------
+    # 진입 플래그: 0 → 비0 전환 시점
+    df['Entry_Flag'] = (df['Signal'] != 0) & (df['Signal'].shift(1) == 0)
+
+    # 진입 가격 기록 (NaN → 실제 가격 → forward fill)
     df['Entry_Price'] = np.nan
-    df['Entry_Price'] = np.where(df['Entry_Flag'], df['close'], df['Entry_Price'].shift(1))
+    df.loc[df['Entry_Flag'], 'Entry_Price'] = df['close']
+    df['Entry_Price'] = df['Entry_Price'].ffill()
 
-    # ---------- TP / SL ----------
-    df['TP'] = np.nan
-    df['SL'] = np.nan
-    df['TP'] = np.where(df['Entry_Flag'], df['Entry_Price'] * (1 + tp), df['TP'].shift(1))
-    df['SL'] = np.where(df['Entry_Flag'], df['Entry_Price'] * (1 - sl), df['SL'].shift(1))
+    # TP / SL
+    df['TP'] = np.where(df['Signal'] == 1, df['Entry_Price'] * (1 + tp), np.nan)
+    df['SL'] = np.where(df['Signal'] == 1, df['Entry_Price'] * (1 - sl), np.nan)
+    df['TP'] = np.where(df['Signal'] == -1, df['Entry_Price'] * (1 - tp), df['TP'])
+    df['SL'] = np.where(df['Signal'] == -1, df['Entry_Price'] * (1 + sl), df['SL'])
 
-    # ---------- Exit flags ----------
-    df['Exit_TP'] = (df['close'] >= df['TP']) & (df['Position'] == 1)
-    df['Exit_SL'] = (df['close'] <= df['SL']) & (df['Position'] == -1)
+    # 포지션 트래킹
+    df['Position'] = df['Signal'].replace(0, np.nan).ffill().shift(1).fillna(0)
 
-    params = {'tp': tp, 'sl': sl}
-    return df, params
+    return df, {'tp': tp, 'sl': sl}
