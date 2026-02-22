@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 from fetcher import fetch_historical_data
 from indicators import add_indicators
 
+# 🌟 개선점 2: 루프 밖에서 미리 임포트 (안전성 강화)
+import strategy 
+
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -46,7 +49,7 @@ async def run_bot():
     
     balance = INITIAL_BALANCE
     position = None 
-    shadow_position = None # 🌟 섀도우 포지션
+    shadow_position = None 
     
     TARGET_ROE = TP_PCT * LEVERAGE      
     STOPLOSS_ROE = -(SL_PCT * LEVERAGE) 
@@ -59,9 +62,7 @@ async def run_bot():
             df_ind = add_indicators(df_raw)
             
             # --- 1. 실전(Live) 전략 실행 ---
-            # 🌟 매번 모듈을 리로드하여, 결재가 나면 봇 재부팅 없이 다음 캔들부터 바로 새 코드 적용
-            import strategy
-            importlib.reload(strategy)
+            importlib.reload(strategy) # 🌟 코드가 덮어씌워지면 즉시 새로고침
             df = strategy.apply_strategy(df_ind.copy(), ema_len=30)
             last = df.iloc[-1]
             
@@ -77,18 +78,28 @@ async def run_bot():
                         pos_type = "LONG" if last_shadow['Long_Signal'] else "SHORT"
                         shadow_position = {'type': pos_type, 'price': last_shadow['close']}
                         print(f"👻 [섀도우 검증] {pos_type} 가상 진입 포착! (가격: {last_shadow['close']})")
+                    
                     elif shadow_position is not None:
-                        roe_diff = abs((last_shadow['close'] - shadow_position['price']) / shadow_position['price'] * LEVERAGE)
-                        if roe_diff >= TP_PCT or roe_diff >= SL_PCT:
-                            print(f"👻 [섀도우 검증] 가상 포지션 종료 완료.")
+                        # 🌟 개선점 1: 롱/숏 구분하여 정확한 ROE(수익률) 계산
+                        if shadow_position['type'] == 'LONG':
+                            shadow_roe = (last_shadow['close'] - shadow_position['price']) / shadow_position['price'] * LEVERAGE
+                        else: # SHORT
+                            shadow_roe = (shadow_position['price'] - last_shadow['close']) / shadow_position['price'] * LEVERAGE
+                        
+                        # 타겟 익절/손절 도달 확인
+                        if shadow_roe >= TARGET_ROE:
+                            print(f"👻 [섀도우 검증] 🎯 익절(TP) 도달! 가상 포지션 종료 (ROE: +{shadow_roe*100:.2f}%)")
+                            shadow_position = None
+                        elif shadow_roe <= STOPLOSS_ROE:
+                            print(f"👻 [섀도우 검증] ❌ 손절(SL) 도달! 가상 포지션 종료 (ROE: {shadow_roe*100:.2f}%)")
                             shadow_position = None
                 except Exception as e:
-                    pass # 섀도우 에러는 메인 봇에 영향을 주지 않게 무시
+                    pass # 섀도우 에러는 무시
 
             current_time = datetime.now(KST)
             current_price = last['close']
             
-            # --- 3. 실전 포지션 진입/청산 로직 ---
+            # --- 3. 실전 포지션 진입/청산 로직 (기존과 동일) ---
             if position is None:
                 if last['Long_Signal'] or last['Short_Signal']:
                     pos_type = "LONG" if last['Long_Signal'] else "SHORT"
@@ -141,6 +152,20 @@ async def run_bot():
                     msg = f"🏁 [{close_reason} 완료] {pos_type} 포지션 종료\n💵 순손익: {net_trade_pnl:.2f} USDT (ROE: {roe_pct*100:.2f}%)"
                     print(msg)
                     await send_telegram_msg(msg)
+                    
+                    # 🌟 매매 일지 기록 저장
+                    trade_record = {
+                        "진입시간": position['entry_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                        "청산시간": current_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        "포지션": pos_type,
+                        "진입가": round(position['entry_price'], 2),
+                        "청산가": round(current_price, 2),
+                        "순손익(USDT)": round(net_trade_pnl, 2),
+                        "최종ROE(%)": round(roe_pct * 100, 2),
+                        "종료사유": close_reason
+                    }
+                    save_trade_history(trade_record)
+                    
                     position = None
                     if close_reason == "강제청산(LIQ)": break
 

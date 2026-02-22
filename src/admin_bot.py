@@ -8,17 +8,31 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-async def send_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/report 명령어 입력 시 진화 리포트와 버튼 전송"""
-    
-    # 🛡️ 보안 1차 방어막: 등록된 CHAT_ID(지훈님)가 아니면 무시하고 차단!
+# 🌟 추가됨: 봇을 처음 켰을 때(또는 /start 입력 시) 명령어 안내
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/start 명령어 입력 시 인사말과 명령어 안내"""
     user_chat_id = str(update.effective_chat.id)
     if user_chat_id != str(CHAT_ID):
         print(f"⚠️ [경고] 권한 없는 사용자의 접근 시도 차단! (ID: {user_chat_id})")
-        return # 아무 대답도 하지 않고 무시함
+        return
+
+    welcome_msg = (
+        "안녕하세요 보스! 퀀트 트레이딩 비서 봇입니다. 🤖\n\n"
+        "아래 명령어를 클릭하거나 입력해 주세요:\n"
+        "👉 /report : 최신 AI 전략 개선 제안서 확인 및 결재\n"
+        "👉 /start : 이 안내 메시지 다시 보기"
+    )
+    await update.message.reply_text(welcome_msg)
+
+async def send_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/report 명령어 입력 시 진화 리포트와 버튼 전송"""
+    user_chat_id = str(update.effective_chat.id)
+    if user_chat_id != str(CHAT_ID):
+        print(f"⚠️ [경고] 권한 없는 사용자의 접근 시도 차단! (ID: {user_chat_id})")
+        return 
 
     if not os.path.exists("report.png") or not os.path.exists("src/strategy_candidate.py"):
-        await update.message.reply_text("아직 대기 중인 AI 후보 전략이 없습니다. 서버에서 evolve.py를 실행하세요.")
+        await update.message.reply_text("아직 대기 중인 AI 후보 전략이 없습니다. 서버에서 'python src/evolve.py'를 실행하세요.")
         return
 
     with open("report_stats.txt", "r") as f:
@@ -44,13 +58,12 @@ async def send_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # 🛡️ 보안 2차 방어막: 혹시라도 다른 사람이 버튼을 누르려 하면 튕겨냄!
     user_chat_id = str(update.effective_chat.id)
     if user_chat_id != str(CHAT_ID):
         await query.answer("❌ 권한이 없습니다. 관리자만 조작 가능합니다.", show_alert=True)
         return
 
-    await query.answer() # 정상적인 승인자의 경우 버튼 로딩 해제
+    await query.answer() 
     
     if query.data == "DEPLOY_LIVE":
         shutil.copyfile("src/strategy.py", "src/strategy_backup.py")
@@ -75,8 +88,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == "__main__":
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # 🌟 명령어 핸들러 등록
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", start_command)) # /help를 쳐도 안내가 나오게 추가
     app.add_handler(CommandHandler("report", send_report_command))
+    
     app.add_handler(CallbackQueryHandler(button_callback))
     
-    print("👔 텔레그램 결재 대기 봇 가동 중... 텔레그램에서 /report 를 입력하세요.")
+    print("👔 텔레그램 결재 대기 봇 가동 중...")
     app.run_polling()

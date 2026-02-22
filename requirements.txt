@@ -9,4 +9,5 @@ kaleido
 https://sourceforge.net/projects/pandas-ta.mirror/files/0.3.14/PandasTA-v0.3.14b%20source%20code.zip/download
 python-telegram-bot
 openai==1.52.2
+httpx==0.27.2
 plotly
