@@ -3,10 +3,8 @@ services:
     build: .
     restart: always
     command: python src/core/main.py
-    # --- 아래 PYTHONPATH 설정을 추가하세요 ---
     environment:
       - PYTHONPATH=/app/src
-    # ------------------------------------
     volumes:
       - .:/app
     env_file:
@@ -16,10 +14,8 @@ services:
     build: .
     restart: always
     command: python src/utils/admin_bot.py
-    # --- 여기도 동일하게 추가합니다 ---
     environment:
       - PYTHONPATH=/app/src
-    # ----------------------------
     volumes:
       - .:/app
     env_file:
