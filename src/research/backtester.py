@@ -1,42 +1,40 @@
 import vectorbt as vbt
-# [경로 수정] 패키지 구조에 맞게 임포트 경로 확인 필요
+import importlib
 from utils.fetcher import fetch_historical_data
 from utils.indicators import add_indicators
-from strategies.strategy import apply_strategy
+import strategies.strategy as strategy
 
 def run_final_test():
-    print("📊 [최종 검증] 양방향(LONG/SHORT) 전략 성적표 도출 중...")
+    print("📊 [최종 검증] 양방향 동적 TP/SL 전략 성적표 도출 중...")
     
-    # 1. 데이터 수집 및 지표 추가
+    # 1. 데이터 준비
     raw_df = fetch_historical_data(limit=5000)
     df_ind = add_indicators(raw_df)
     
-    # 2. 전략 적용 (수정된 반환 형식 반영)
-    df, d_params = apply_strategy(df_ind)
+    # 2. 전략 실행 (컬럼 및 파라미터 수신)
+    importlib.reload(strategy)
+    df, d_params = strategy.apply_strategy(df_ind)
     
-    print(f"💡 적용된 동적 타겟 - TP: {d_params['tp']*100:.2f}%, SL: {d_params['sl']*100:.2f}%")
+    print(f"💡 현재 시점 기준 타겟 - TP: {d_params['tp']*100:.2f}%, SL: {d_params['sl']*100:.2f}%")
     
-    # 3. 포트폴리오 생성
+    # 3. 컬럼 기반 백테스트 실행
     pf = vbt.Portfolio.from_signals(
         df['close'], 
         entries=df['Long_Signal'],        
         short_entries=df['Short_Signal'], 
         exits=None,
         short_exits=None,
-        tp_stop=d_params['tp'],   # 🌟 전략에서 제안한 동적 TP 사용
-        sl_stop=d_params['sl'],   # 🌟 전략에서 제안한 동적 SL 사용
-        fees=0.0005,              # 수수료 최적화 (0.05%)
-        slippage=0.001,           # 🌟 실전과 유사하게 0.1% 슬리피지 추가
+        tp_stop=df['target_tp'], # 🌟 시점별 동적 익절 적용
+        sl_stop=df['target_sl'], # 🌟 시점별 동적 손절 적용
+        fees=0.00075, 
+        slippage=0.001,          # 실전 슬리피지 반영
         freq='3m'
     )
     
     print("\n" + "="*50)
-    print("📈 ETH 스나이퍼 양항향 전략 최종 성적표 (ATR 동적 모드)")
+    print("📈 ETH 스나이퍼 양방향 전략 최종 성적표 (ATR 동적 컬럼 모드)")
     print(pf.stats())
     print("="*50)
-    
-    # 리포트 저장 (선택 사항)
-    # pf.plot().write_image("data/reports/final_test_report.png")
 
 if __name__ == "__main__":
     run_final_test()

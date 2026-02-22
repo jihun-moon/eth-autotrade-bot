@@ -29,7 +29,7 @@ async def send_telegram_msg(message):
 async def heartbeat_loop():
     while True:
         try:
-            await send_telegram_msg(f"💓 [Heartbeat] 시스템 정상 가동 중\n⏰ {datetime.now(KST).strftime('%H:%M:%S')}")
+            await send_telegram_msg(f"💓 [Heartbeat] 가동 중\n⏰ {datetime.now(KST).strftime('%H:%M:%S')}")
             await asyncio.sleep(3600)
         except: await asyncio.sleep(60)
 
@@ -42,7 +42,7 @@ async def run_bot():
     if saved_pos:
         position = {'id': saved_pos.id, 'type': saved_pos.pos_type, 'entry_price': saved_pos.entry_price,
                     'amount': saved_pos.amount, 'tp': saved_pos.tp_pct, 'sl': saved_pos.sl_pct, 'entry_time': saved_pos.entry_time}
-        logger.info(f"♻️ 포지션 복구 완료: {position['type']}")
+        logger.info(f"♻️ 복구: {position['type']}")
 
     shadow_position = None
     await send_telegram_msg("✅ 시스템 가동 시작!")
@@ -54,7 +54,7 @@ async def run_bot():
             df, d_params = strategy.apply_strategy(df_ind.copy())
             last = df.iloc[-1]; current_price = last['close']
 
-            # 섀도우 모니터링
+            # 섀도우 감시
             shadow_path = "src/strategies/strategy_shadow.py"
             if os.path.exists(shadow_path):
                 import strategies.strategy_shadow as s_shadow
@@ -81,7 +81,7 @@ async def run_bot():
                     db.add(new_pos); db.commit(); db.refresh(new_pos)
                     position = {'id': new_pos.id, 'type': pos_type, 'entry_price': current_price, 'amount': amount, 
                                 'tp': d_params['tp'], 'sl': d_params['sl'], 'entry_time': datetime.now(KST)}
-                    await send_telegram_msg(f"🎯 [실전 진입] {pos_type} (TP: {d_params['tp']*100:.1f}%)")
+                    await send_telegram_msg(f"🎯 [실전 진입] {pos_type} | TP: {d_params['tp']*100:.1f}%")
             else:
                 roe = ((current_price - position['entry_price']) / position['entry_price'] * LEVERAGE if position['type']=="LONG" else (position['entry_price'] - current_price) / position['entry_price'] * LEVERAGE)
                 if roe >= (position['tp'] * LEVERAGE) or roe <= -(position['sl'] * LEVERAGE):
@@ -89,11 +89,10 @@ async def run_bot():
                     db.add(TradeHistory(entry_time=position['entry_time'], exit_time=datetime.now(KST), pos_type=position['type'], 
                                         entry_price=position['entry_price'], exit_price=current_price, roe_pct=roe*100, exit_reason=reason))
                     db.query(ActivePosition).filter(ActivePosition.id == position['id']).delete(); db.commit()
-                    await send_telegram_msg(f"🏁 [실전 청산] {reason} (ROE: {roe*100:.2f}%)"); position = None
+                    await send_telegram_msg(f"🏁 [실전 청산] {reason} | ROE: {roe*100:.2f}%"); position = None
 
-            now = datetime.now(KST)
-            next_run = now.replace(second=2, microsecond=0) + timedelta(minutes=3 - (now.minute % 3))
-            await asyncio.sleep((next_run - now).total_seconds())
+            next_run = datetime.now(KST).replace(second=2, microsecond=0) + timedelta(minutes=3 - (datetime.now(KST).minute % 3))
+            await asyncio.sleep((next_run - datetime.now(KST)).total_seconds())
         except Exception as e: logger.error(f"⚠️ 에러: {e}"); await asyncio.sleep(10)
 
 if __name__ == "__main__":
