@@ -17,7 +17,7 @@ def fetch_historical_data(symbol='ETH/USDT', timeframe='3m', limit=5000):
         df_new = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df_new['timestamp'] = pd.to_datetime(df_new['timestamp'], unit='ms')
         df_new.set_index('timestamp', inplace=True)
-        df_local = pd.concat([df_local, df_new]).drop_duplicates() if 'df_local' in locals() else df_new
+        df_local = pd.concat([df_local, df_new]).drop_duplicates().sort_index() if 'df_local' in locals() else df_new
         df_local.to_csv(raw_path)
         
     return df_local.tail(limit)
