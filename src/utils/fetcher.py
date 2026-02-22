@@ -1,23 +1,60 @@
 import ccxt
 import pandas as pd
-import os, time
+import os
+import time
+import logging
+
+logger = logging.getLogger("BottomScanner")
 
 def fetch_historical_data(symbol='ETH/USDT', timeframe='3m', limit=5000):
-    exchange = ccxt.binance()
+    """증분 수집 로직 및 API 안정성 강화"""
+    exchange = ccxt.binance({'enableRateLimit': True})
     raw_path = f"data/raw/{symbol.replace('/', '_')}_{timeframe}.csv"
     os.makedirs("data/raw", exist_ok=True)
-    
-    since = None
-    if os.path.exists(raw_path):
-        df_local = pd.read_csv(raw_path, index_col=0, parse_dates=True)
-        if not df_local.empty: since = int(df_local.index[-1].timestamp() * 1000) + 1
 
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=1000)
-    if ohlcv:
-        df_new = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df_local = pd.DataFrame()
+    since = None
+    
+    # 1. 기존 로컬 데이터 로드
+    if os.path.exists(raw_path):
+        try:
+            df_local = pd.read_csv(raw_path, index_col=0, parse_dates=True)
+            if not df_local.empty:
+                since = int(df_local.index[-1].timestamp() * 1000) + 1
+        except Exception as e:
+            logger.error(f"⚠️ 로컬 데이터 로드 실패: {e}")
+
+    # 2. 거래소 데이터 증분 수집
+    all_ohlcv = []
+    attempts = 0
+    max_retries = 3
+
+    while len(all_ohlcv) < limit:
+        try:
+            fetch_limit = min(1000, limit - len(all_ohlcv))
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=fetch_limit)
+            if not ohlcv: break
+            all_ohlcv.extend(ohlcv)
+            since = ohlcv[-1][0] + 1
+            time.sleep(0.1) # API 부하 방지
+        except Exception as e:
+            attempts += 1
+            logger.warning(f"⚠️ 데이터 수집 시도 {attempts}/{max_retries} 실패: {e}")
+            if attempts >= max_retries: break
+            time.sleep(2 ** attempts)
+
+    # 3. 데이터 통합 및 저장
+    if all_ohlcv:
+        df_new = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df_new['timestamp'] = pd.to_datetime(df_new['timestamp'], unit='ms')
         df_new.set_index('timestamp', inplace=True)
-        df_local = pd.concat([df_local, df_new]).drop_duplicates().sort_index() if 'df_local' in locals() else df_new
-        df_local.to_csv(raw_path)
         
+        if not df_local.empty:
+            df_combined = pd.concat([df_local, df_new]).drop_duplicates().sort_index()
+        else:
+            df_combined = df_new
+            
+        df_combined.to_csv(raw_path)
+        return df_combined.tail(limit)
+    
     return df_local.tail(limit)
