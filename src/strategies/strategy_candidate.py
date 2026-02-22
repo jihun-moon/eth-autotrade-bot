@@ -1,124 +1,74 @@
-import pandas_ta as ta
+import pandas as pd
 import numpy as np
+import pandas_ta as ta
 
-def apply_strategy(df, ema_len=30, tp_mult=2.0, sl_mult=1.5):
+def apply_strategy(df, ema_len=30):
     """
-    SMC(Volume Profile) + CVD + Liquidity Sweep 전략
-    - VAL/VAH 외부의 유동성을 터치하고 복귀하는 타점을 포착합니다.
-    - 청산 밀집 구역(1940 $, 1995 $) 근처에서 신호를 강화합니다.
-    - 펀딩비(0.01 %)를 이용해 롱/숏 신호에 미세 가중치를 부여합니다.
+    Improved SMC + CVD + trend filter strategy.
+    - Uses ADX and EMA_200 slope to block reverse entries in strong trends.
+    - Adds CVD momentum filter (10‑bar rolling mean) and price volatility filter.
+    - Returns df with entry/exit columns and fixed TP/SL dict.
     """
-    # --------------------------------------------------------------
-    # 1️⃣ ATR 계산 (동적 익절/손절용 – evolve.py 지침 준수)
-    # --------------------------------------------------------------
-    df['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+    # Ensure required columns exist
+    required = ['close', 'VAL', 'VAH', 'CVD', 'CVD_Signal', 'ADX', 'EMA_200']
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
 
-    # --------------------------------------------------------------
-    # 2️⃣ 청산 밀집 구역 정의 (절대 tolerance $5)
-    # --------------------------------------------------------------
-    TOL_LONG = 5.0          # 1940 $ ± $5
-    TOL_SHORT = 5.0         # 1995 $ ± $5
-    df['Long_Liquidation_Zone'] = (
-        (df['close'] >= 1940 - TOL_LONG) &
-        (df['close'] <= 1940 + TOL_LONG)
-    )
-    df['Short_Liquidation_Zone'] = (
-        (df['close'] >= 1995 - TOL_SHORT) &
-        (df['close'] <= 1995 + TOL_SHORT)
-    )
+    # Fixed TP/SL
+    df['target_tp'] = 0.02   # 2% 익절
+    df['target_sl'] = 0.015  # 1.5% 손절
 
-    # --------------------------------------------------------------
-    # 3️⃣ 펀딩비 (Normal 0.01 % = 0.0001) → bias factor
-    # --------------------------------------------------------------
-    FUNDING_RATE = 0.0001          # 0.01 %
-    FUNDING_BIAS = 1.0 + FUNDING_RATE * 100   # 1.01
+    # Trend strength and direction
+    df['strong_trend'] = df['ADX'] > 25
+    df['ema_dir'] = np.sign(df['EMA_200'].diff())  # 1 = uptrend, -1 = downtrend, 0 = flat
 
-    # --------------------------------------------------------------
-    # 4️⃣ 동적 TP / SL 컬럼 생성
-    #    - 청산 구역 내이면 TP를 10 % 확대, SL을 10 % 축소
-    #    - 구역 외에서는 기본 비율 유지
-    # --------------------------------------------------------------
-    zone_factor_long = np.where(df['Long_Liquidation_Zone'], 1.1, 1.0)
-    zone_factor_short = np.where(df['Short_Liquidation_Zone'], 1.1, 1.0)
+    # CVD momentum filter (10‑bar rolling mean)
+    df['CVD_ma'] = df['CVD'].rolling(window=10, min_periods=1).mean()
 
-    # TP multiplier 조정: 구역 내이면 2.5, 구역 외이면 기본값
-    tp_mult_adj = np.where(df['Long_Liquidation_Zone'], 2.5, tp_mult)
-    # SL multiplier 조정: 구역 내이면 1.3, 구역 외이면 기본값
-    sl_mult_adj = np.where(df['Short_Liquidation_Zone'], 1.3, sl_mult)
+    # Price volatility filter (20‑bar std)
+    df['price_std'] = df['close'].rolling(window=20, min_periods=1).std()
 
-    df['target_tp'] = (
-        (df['ATR'] * tp_mult_adj / df['close'])
-        .fillna(0.02)               # 최소 2 % 확보
-        .clip(lower=0.01)           # 최소 1 % 제한
-        * zone_factor_long
-    )
-    df['target_sl'] = (
-        (df['ATR'] * sl_mult_adj / df['close'])
-        .fillna(0.015)              # 최소 1.5 % 확보
-        .clip(lower=0.008)          # 최소 0.8 % 제한
-        * zone_factor_short
-    )
+    # ---------- LONG ENTRY ----------
+    long_price_cond = df['close'] < df['VAL']
+    long_cvd_cond = df['CVD'] > df['CVD_ma']
+    long_cvd_sign_cond = df['CVD'] > df['CVD_Signal']
+    long_vol_cond = df['close'] < df['VAH'] - 0.5 * df['price_std']
+    long_filter = ~(df['strong_trend'] & (df['ema_dir'] == -1))
 
-    # --------------------------------------------------------------
-    # 5️⃣ 진입 로직 (이미 계산된 ADX, CVD, VAL, VAH, RSI 활용)
-    # --------------------------------------------------------------
+    df['Long_Signal'] = long_price_cond & long_cvd_cond & long_cvd_sign_cond & long_vol_cond & long_filter
 
-    # ── 롱 전략 ──
-    # ① Liquidity Sweep
-    df['Long_Sweep'] = (df['low'] < df['VAL']) & (df['close'] > df['low'])
+    # ---------- SHORT ENTRY ----------
+    short_price_cond = df['close'] > df['VAH']
+    short_cvd_cond = df['CVD'] < df['CVD_ma']
+    short_cvd_sign_cond = df['CVD'] < df['CVD_Signal']
+    short_vol_cond = df['close'] > df['VAL'] + 0.5 * df['price_std']
+    short_filter = ~(df['strong_trend'] & (df['ema_dir'] == 1))
 
-    # ② 상승 다이버전스 (RSI 저점 상승)
-    df['Low_3'] = df['low'].rolling(3).min()
-    df['Bull_Div'] = (df['low'] == df['Low_3']) & (df['RSI'] > df['RSI'].shift(1))
+    df['Short_Signal'] = short_price_cond & short_cvd_cond & short_cvd_sign_cond & short_vol_cond & short_filter
 
-    # ③ 롱 신호 결합
-    df['Long_Signal'] = (
-        df['Long_Sweep'] &
-        df['Bull_Div'] &
-        (df['CVD'] > df['CVD_Signal']) &
-        (df['close'] > df['EMA_200'])          # EMA_200 은 이미 존재
-    )
-    # ④ 시장 강도 필터 (ADX ≤ 30 혹은 장기 추세)
-    df['Long_Signal'] = df['Long_Signal'] & (
-        (df['ADX'] <= 30) | (df['close'] >= df['EMA_200'])
-    )
+    # Signal column (1 = long, -1 = short, 0 = no signal)
+    df['Signal'] = np.where(df['Long_Signal'], 1,
+                            np.where(df['Short_Signal'], -1, 0))
 
-    # ⑤ 청산 구역 강화
-    df['Long_Signal'] = df['Long_Signal'] & df['Long_Liquidation_Zone']
+    # Position column (maintains current position)
+    df['Position'] = df['Signal'].shift(1).fillna(0)
 
-    # ⑥ 펀딩비 bias 적용 (양수 펀딩비 → 롱 신호에 +1 %)
-    df['Long_Signal'] = df['Long_Signal'] * FUNDING_BIAS
+    # Entry price (filled forward when position changes)
+    df['Entry_Price'] = np.nan
+    df['Entry_Price'] = np.where(df['Position'] != df['Signal'],
+                                df['close'],
+                                df['Entry_Price'].shift(1))
 
-    # ── 숏 전략 ──
-    # ① Liquidity Sweep
-    df['Short_Sweep'] = (df['high'] > df['VAH']) & (df['close'] < df['high'])
+    # TP / SL levels (filled forward after entry)
+    df['TP'] = df['Entry_Price'].fillna(method='ffill') * (1 + df['target_tp'])
+    df['SL'] = df['Entry_Price'].fillna(method='ffill') * (1 - df['target_sl'])
 
-    # ② 하락 다이버전스 (RSI 고점 하락)
-    df['High_3'] = df['high'].rolling(3).max()
-    df['Bear_Div'] = (df['high'] == df['High_3']) & (df['RSI'] < df['RSI'].shift(1))
+    # Exit flags
+    df['Exit_TP'] = (df['close'] >= df['TP']) & (df['Position'] == 1)
+    df['Exit_SL'] = (df['close'] <= df['SL']) & (df['Position'] == -1)
 
-    # ③ 숏 신호 결합
-    df['Short_Signal'] = (
-        df['Short_Sweep'] &
-        df['Bear_Div'] &
-        (df['CVD'] < df['CVD_Signal']) &
-        (df['close'] < df['EMA_200'])
-    )
-    # ④ 시장 강도 필터
-    df['Short_Signal'] = df['Short_Signal'] & (
-        (df['ADX'] <= 30) | (df['close'] <= df['EMA_200'])
-    )
+    # Optional: drop intermediate helper columns if desired
+    # df.drop(columns=['strong_trend','ema_dir','CVD_ma','price_std'], inplace=True)
 
-    # ⑤ 청산 구역 강화
-    df['Short_Signal'] = df['Short_Signal'] & df['Short_Liquidation_Zone']
-
-    # ⑥ 펀딩비 bias 적용 (양수 펀딩비 → 숏 신호에 -1 %)
-    df['Short_Signal'] = df['Short_Signal'] * (1 / FUNDING_BIAS)
-
-    # --------------------------------------------------------------
-    # 6️⃣ 실전용 파라미터 반환
-    # --------------------------------------------------------------
-    last_tp = df['target_tp'].iloc[-1]
-    last_sl = df['target_sl'].iloc[-1]
-
-    return df, {'tp': last_tp, 'sl': last_sl}
+    return df, {'tp': 0.02, 'sl': 0.015}

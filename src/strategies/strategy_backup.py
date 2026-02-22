@@ -1,35 +1,43 @@
 import pandas_ta as ta
+import numpy as np
 
 def apply_strategy(df, ema_len=30):
-    # =========================================
-    # 1. 롱(Long) 타점 전략 (기존 동일)
-    # =========================================
-    df['Below_Structure'] = df['close'] < df['VAL']
-    df['Low_3'] = df['low'].rolling(3).min()
-    df['Bull_Div'] = (df['low'] == df['Low_3']) & (df['RSI'] > df['RSI'].shift(1))
+    """
+    SMC + CVD + 추세 필터 결합 전략 (심플 버전)
+    - 익절/손절은 고정(2%/1.5%)으로 가져가며 진입 시그널에 집중합니다.
+    """
+    # 1. 고정 익절/손절 설정 (복잡한 ATR 제거)
+    df['target_tp'] = 0.02   # 2% 익절
+    df['target_sl'] = 0.015  # 1.5% 손절
+
+    # 2. 보조 지표 확인 (이미 indicators.py에서 계산됨)
+    # EMA_200, ADX, VAL, VAH, CVD, CVD_Signal 사용
+    
+    # [필터] 강한 추세장에서의 역추세 진입 방어
+    # - ADX가 25보다 크면 추세가 강하다고 판단
+    strong_trend = df['ADX'] > 25
+    uptrend = df['close'] > df['EMA_200']
+    downtrend = df['close'] < df['EMA_200']
+
+    # 3. 롱 시그널: 매물대 하단 + 수급 개선 + (하락 추세장 롱 금지)
+    # 하락장(downtrend)이면서 추세가 강하면(strong_trend) 롱 진입을 차단합니다.
+    long_filter = ~(strong_trend & downtrend)
     
     df['Long_Signal'] = (
-        df['Below_Structure'] & 
-        df['Bull_Div'] & 
-        (df['CVD'] > df['CVD_Signal']) &  
-        (df['close'] > ta.ema(df['close'], length=ema_len))  
+        (df['close'] < df['VAL']) & 
+        (df['CVD'] > df['CVD_Signal']) &
+        long_filter
     )
 
-    # =========================================
-    # 2. 숏(Short) 타점 전략 (롱의 정반대)
-    # =========================================
-    # 매물대 상단(VAH) 위로 올라갔다가 저항받는 자리
-    df['Above_Structure'] = df['close'] > df['VAH']
-    
-    # RSI 하락 다이버전스 (고점은 같거나 높아지는데 RSI는 꺾임)
-    df['High_3'] = df['high'].rolling(3).max()
-    df['Bear_Div'] = (df['high'] == df['High_3']) & (df['RSI'] < df['RSI'].shift(1))
+    # 4. 숏 시그널: 매물대 상단 + 수급 악화 + (상승 추세장 숏 금지)
+    # 상승장(uptrend)이면서 추세가 강하면(strong_trend) 숏 진입을 차단합니다.
+    short_filter = ~(strong_trend & uptrend)
     
     df['Short_Signal'] = (
-        df['Above_Structure'] & 
-        df['Bear_Div'] & 
-        (df['CVD'] < df['CVD_Signal']) &                     # 수급 악화 (매도세 우위)
-        (df['close'] < ta.ema(df['close'], length=ema_len))  # 단기 이평선 아래로 꺾임 (하락 추세)
+        (df['close'] > df['VAH']) & 
+        (df['CVD'] < df['CVD_Signal']) &
+        short_filter
     )
-    
-    return df
+
+    # 5. 실전 및 백테스트용 규격 반환
+    return df, {'tp': 0.02, 'sl': 0.015}
