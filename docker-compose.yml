@@ -5,6 +5,7 @@ services:
     command: python src/core/main.py
     environment:
       - PYTHONPATH=/app/src
+      - PYTHONUNBUFFERED=1  # 🌟 실시간 로그 출력을 강제하는 핵심 설정
     volumes:
       - .:/app
     env_file:
@@ -16,6 +17,7 @@ services:
     command: python src/utils/admin_bot.py
     environment:
       - PYTHONPATH=/app/src
+      - PYTHONUNBUFFERED=1  # 🌟 AI 진화 과정의 로그를 즉시 확인 가능
     volumes:
       - .:/app
     env_file:

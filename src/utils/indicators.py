@@ -3,14 +3,23 @@ import pandas_ta as ta
 import numpy as np
 
 def add_indicators(df):
-    # 1. 기본 지표
+    # 0. 모든 필수 컬럼 초기화 (KeyError 방지)
+    df['VAL'] = df['close'] * 0.99
+    df['VAH'] = df['close'] * 1.01
+    df['POC'] = df['close']
+    df['CVD'] = 0
+    df['CVD_Signal'] = 0
+    df['ADX'] = 0
+
+    # 1. 기본 지표 계산
     df['RSI'] = ta.rsi(df['close'], length=14)
     df['EMA_200'] = ta.ema(df['close'], length=200)
     
     adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
-    df['ADX'] = adx_df['ADX_14'] if adx_df is not None else 0
+    if adx_df is not None:
+        df['ADX'] = adx_df['ADX_14']
 
-    # 2. 볼륨 프로파일 (VAL, VAH)
+    # 2. 볼륨 프로파일 (데이터가 충분할 때만 업데이트)
     lookback = 480
     if len(df) >= lookback:
         window = df.iloc[-lookback:]
@@ -25,10 +34,8 @@ def add_indicators(df):
             if lv >= rv: current_v += lv; l -= 1
             else: current_v += rv; r += 1
         df['VAL'], df['VAH'] = bin_edges[l], bin_edges[r+1]
-    else:
-        df['VAL'], df['VAH'] = df['close'] * 0.99, df['close'] * 1.01
 
-    # 3. CVD (Cumulative Volume Delta)
+    # 3. CVD (수급 지표) 추가
     df['vol_delta'] = np.where(df['close'] >= df['close'].shift(1), df['volume'], -df['volume'])
     df['CVD'] = df['vol_delta'].cumsum()
     df['CVD_Signal'] = ta.ema(df['CVD'], length=20)
