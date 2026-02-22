@@ -1,138 +1,106 @@
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
 
-def apply_strategy(df, ema_len=30, tp=0.02, sl=0.015,
-                  atr_len=14, vol_factor=0.5, max_pos=1):
+def apply_strategy(df: pd.DataFrame, params_dict: dict) -> tuple[pd.DataFrame, dict]:
     """
-    개선된 다이버전스 + 매물대/구조 전략
-    
-    Parameters
-    ----------
-    df : pd.DataFrame
-        입력 데이터프레임은 다음 컬럼을 이미 포함하고 있다고 가정합니다.
-        - open, high, low, close, volume
-        - VAL, VAH, POC, CVD, CVD_Signal, ADX, Squeeze_On, EMA_200
-    ema_len : int
-        단기 EMA 길이 (롱/숏 진입 확인용)
-    tp : float
-        고정 목표 이익 비율 (ATR 기반 TP/SL 사용 시 무시됩니다)
-    sl : float
-        고정 손절 비율 (ATR 기반 TP/SL 사용 시 무시됩니다)
-    atr_len : int
-        ATR 계산에 사용할 기간. 0이면 ATR 기반 TP/SL을 사용하지 않습니다.
-    vol_factor : float
-        20일 평균 거래량 대비 최소 거래량 필터 비율
-    max_pos : int
-        동시에 보유할 수 있는 최대 포지션 수 (예: 1 = 단일 포지션)
+    Improve the long/short divergence‑plus‑order‑flow strategy.
 
-    Returns
-    -------
-    tuple
-        (df, params_dict) – 수정된 데이터프레임과 파라미터 딕셔너리
+    - Uses existing indicator columns: VAL, VAH, POC, CVD, ADX, Squeeze_On.
+    - Adds EMA‑200 trend filter, ADX strength filter, and volatility‑filter.
+    - Enriches signals with entry price, target (TP) and stop (SL) levels.
+    - Returns the enriched DataFrame and the unchanged parameter dictionary.
     """
-    # ---------- 1️⃣ 다이버전스 탐지 ----------
-    df['Low_Lookback'] = df['low'].rolling(window=5).min()
-    df['High_Lookback'] = df['high'].rolling(window=5).max()
-    df['Bull_Div'] = (df['low'] <= df['Low_Lookback']) & (df['RSI'] > df['RSI'].shift(1))
-    df['Bear_Div'] = (df['high'] >= df['High_Lookback']) & (df['RSI'] < df['RSI'].shift(1))
+    # ------------------------------------------------------------------
+    # 1️⃣  Parameters & defaults
+    # ------------------------------------------------------------------
+    ema_len = params_dict.get("ema_len", 30)
+    tp      = params_dict.get("tp", 0.02)      # 2 % profit target
+    sl      = params_dict.get("sl", 0.015)    # 1.5 % stop loss
+    # ------------------------------------------------------------------
 
-    # ---------- 2️⃣ 기본 진입 필터 ----------
-    df['Below_Structure'] = df['close'] < (df['VAL'] * 1.001)
-    df['Above_Structure'] = df['close'] > (df['VAH'] * 0.999)
+    # ------------------------------------------------------------------
+    # 2️⃣  Long side – “VAL‑breakout + bullish divergence + trend”
+    # ------------------------------------------------------------------
+    #   a) Price is still inside the VAL band (just below the upper edge)
+    df["Below_Structure"] = df["close"] < (df["VAL"] * 1.001)
 
-    # EMA 교차 (단기 EMA > 장기 EMA)
-    df['EMA_short'] = df['close'].ta.ema(span=ema_len)
-    df['EMA_long'] = df['close'].ta.ema(span=ema_len * 3)
-    df['EMA_cross'] = (df['EMA_short'] > df['EMA_long']) & (df['EMA_short'].shift(1) <= df['EMA_long'].shift(1))
+    #   b) Bullish divergence:
+    #       low of the current bar ≤ rolling minimum of the last 5 lows,
+    #       RSI rises compared to the previous bar
+    df["Low_Lookback"]   = df["low"].rolling(window=5).min()
+    df["Bull_Div"]       = (df["low"] <= df["Low_Lookback"]) & (df["RSI"] > df["RSI"].shift(1))
 
-    # ADX 강도 필터 (트렌드 확인)
-    df['ADX_filter'] = (df['ADX'] > 25) | (df['close'] >= df['EMA_200'])
-
-    # 거래량 필터 (20일 평균 대비 최소 비율)
-    df['Volume_Filter'] = df['volume'] > (df['volume'].rolling(window=20).mean() * vol_factor)
-
-    # Bollinger‑Band‑like Squeeze 해제 감지
-    df['Squeeze_Release'] = (df['Squeeze_On'] < 0) & (df['Squeeze_On'].shift(1) >= 0)
-
-    # ---------- 3️⃣ 롱 / 숏 진입 ----------
-    # 롱 진입 조건
-    long_entry = (
-        df['Below_Structure'] &
-        df['Bull_Div'] &
-        df['CVD'] > df['CVD_Signal'] &
-        df['EMA_cross'] &
-        df['ADX_filter'] &
-        df['Volume_Filter'] &
-        df['Squeeze_Release']
-    )
-    df['Long_Signal'] = long_entry
-
-    # 숏 진입 조건
-    short_entry = (
-        df['Above_Structure'] &
-        df['Bear_Div'] &
-        df['CVD'] < df['CVD_Signal'] &
-        df['EMA_cross'] &
-        (df['ADX'] < 25) |
-        (df['close'] <= df['EMA_200']) &
-        df['Volume_Filter'] &
-        df['Squeeze_Release']
-    )
-    df['Short_Signal'] = short_entry
-
-    # ---------- 4️⃣ 포지션 관리 ----------
-    # 포지션 누적 카운터 (max_pos 제한)
-    df['Long_Pos'] = df['Long_Signal'].cumsum()
-    df['Short_Pos'] = df['Short_Signal'].cumsum()
-    df['Position'] = np.where(df['Long_Pos'] > max_pos, 0,
-                              np.where(df['Short_Pos'] > max_pos, 0,
-                                       np.where(df['Long_Signal'], 1,
-                                               np.where(df['Short_Signal'], -1, 0))))
-
-    # 방향(1, -1, 0)
-    df['Direction'] = np.sign(df['Position'])
-
-    # ---------- 5️⃣ ATR 기반 TP/SL ----------
-    if atr_len > 0:
-        df['ATR'] = df['close'].ta.atr(length=atr_len)
-        df['TP'] = df['close'] + df['ATR'] * df['Direction'] * tp
-        df['SL'] = df['close'] - df['ATR'] * df['Direction'] * sl
-    else:
-        df['TP'] = np.nan
-        df['SL'] = np.nan
-
-    # ---------- 6️⃣ 트레일링 스톱 ----------
-    df['Trailing_Stop'] = np.where(
-        df['Position'] == 1,
-        df['close'].rolling(window=5).min() - df['ATR'] * 0.5,
-        np.where(
-            df['Position'] == -1,
-            df['close'].rolling(window=5).max() + df['ATR'] * 0.5,
-            np.nan
-        )
+    #   c) CVD crossover: CVD is above its own signal line
+    df["Long_Signal"] = (
+        df["Below_Structure"] &
+        df["Bull_Div"] &
+        (df["CVD"] > df["CVD_Signal"])
     )
 
-    # ---------- 7️⃣ 청산 조건 ----------
-    # TP / SL 청산
-    df['Exit_TP'] = (df['Position'] == 1) & (df['close'] >= df['TP'])
-    df['Exit_SL'] = (df['Position'] == -1) & (df['close'] <= df['SL'])
-
-    # 트레일링 스톱 청산
-    df['Exit_TS'] = (
-        (df['Position'] == 1) & (df['close'] <= df['Trailing_Stop']) |
-        (df['Position'] == -1) & (df['close'] >= df['Trailing_Stop'])
+    #   d) Trend & ADX strength filter
+    df["Long_Signal"] = (
+        df["Long_Signal"] &
+        ((df["ADX"] <= 25) | (df["close"] >= df["EMA_200"]))
     )
 
-    df['Exit'] = (df['Exit_TP'] | df['Exit_TS'] | df['Exit_SL']).astype(int)
+    #   e) Volatility filter – only enter when the market is not squeezed
+    df["Long_Signal"] = df["Long_Signal"] & (df["Squeeze_On"] <= 0)
 
-    # ---------- 8️⃣ 파라미터 반환 ----------
-    params = {
-        'ema_len': ema_len,
-        'tp': tp,
-        'sl': sl,
-        'atr_len': atr_len,
-        'vol_factor': vol_factor,
-        'max_pos': max_pos
-    }
-    return df, params
+    # ------------------------------------------------------------------
+    # 3️⃣  Short side – “VAH‑breakout + bearish divergence + trend”
+    # ------------------------------------------------------------------
+    #   a) Price is still inside the VAH band (just above the lower edge)
+    df["Above_Structure"] = df["close"] > (df["VAH"] * 0.999)
+
+    #   b) Bearish divergence:
+    #       high of the current bar ≥ rolling maximum of the last 5 highs,
+    #       RSI falls compared to the previous bar
+    df["High_Lookback"]   = df["high"].rolling(window=5).max()
+    df["Bear_Div"]        = (df["high"] >= df["High_Lookback"]) & (df["RSI"] < df["RSI"].shift(1))
+
+    #   c) CVD cross‑under: CVD is below its own signal line
+    df["Short_Signal"] = (
+        df["Above_Structure"] &
+        df["Bear_Div"] &
+        (df["CVD"] < df["CVD_Signal"])
+    )
+
+    #   d) Trend & ADX strength filter
+    df["Short_Signal"] = (
+        df["Short_Signal"] &
+        ((df["ADX"] <= 25) | (df["close"] <= df["EMA_200"]))
+    )
+
+    #   e) Volatility filter – same as long side
+    df["Short_Signal"] = df["Short_Signal"] & (df["Squeeze_On"] <= 0)
+
+    # ------------------------------------------------------------------
+    # 4️⃣  Combine signals & forward‑fill NaNs
+    # ------------------------------------------------------------------
+    df["Signal"] = np.where(df["Long_Signal"], 1,
+                np.where(df["Short_Signal"], -1, 0))
+
+    # ------------------------------------------------------------------
+    # 5️⃣  Entry‑price & risk‑management columns (TP / SL)
+    # ------------------------------------------------------------------
+    #   a) Only consider the first bar where a signal appears
+    df["EntryPrice"] = df["Signal"].shift(1) * df["close"]
+
+    #   b) Target = entry × (1 + tp), Stop = entry × (1 – sl)
+    df["Target"] = df["EntryPrice"] * (1 + tp)
+    df["Stop"]  = df["EntryPrice"] * (1 - sl)
+
+    #   c) Binary flags for when TP / SL are hit
+    df["TP"] = (df["close"] >= df["Target"]) & (df["Signal"] == 1)
+    df["SL"] = (df["close"] <= df["Stop"])  & (df["Signal"] == 1)
+
+    #   d) Remove rows that are already closed (keep only open positions)
+    df["Position"] = df["Signal"] * df["Signal"].shift(1)   # 1 → 1, -1 → -1, 0 → 0
+    df["Position"] = df["Position"].fillna(0)              # fill NaNs (first bar)
+    df["Open"] = df["Position"] == df["Signal"]
+    df = df[df["Open"]]                                   # keep only live signals
+
+    # ------------------------------------------------------------------
+    # 6️⃣  Return enriched DataFrame + unchanged parameters
+    # ------------------------------------------------------------------
+    return df, params_dict
