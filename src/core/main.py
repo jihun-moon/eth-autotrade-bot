@@ -5,32 +5,39 @@ import importlib
 from datetime import datetime, timedelta, timezone
 from telegram import Bot
 from dotenv import load_dotenv
-from fetcher import fetch_historical_data
-from indicators import add_indicators
 
-# 🌟 개선점 2: 루프 밖에서 미리 임포트 (안전성 강화)
-import strategy 
+# [경로 수정] 새 구조에 맞춘 유틸리티 모듈 임포트
+from utils.fetcher import fetch_historical_data
+from utils.indicators import add_indicators
+
+# [경로 수정] 전략 모듈 임포트 (패키지 경로 적용)
+import strategies.strategy as strategy 
 
 load_dotenv()
 
+# 환경 변수 및 설정
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 BOT_NAME = "Bottom-Scanner" 
 KST = timezone(timedelta(hours=9))
 
+# 매매 파라미터
 INITIAL_BALANCE = 1300.0  
 LEVERAGE = 10             
 TP_PCT = 0.02             
 SL_PCT = 0.015             
 FEE_RATE = 0.0005         
 
-DB_DIR = "db"
-HISTORY_FILE = f"{DB_DIR}/trade_history.csv"
+# [경로 수정] 데이터 및 리포트 저장 경로
+REPORT_DIR = "data/reports"
+HISTORY_FILE = f"{REPORT_DIR}/trade_history.csv"
 
-if not os.path.exists(DB_DIR):
-    os.makedirs(DB_DIR)
+# 필요한 폴더 생성
+if not os.path.exists(REPORT_DIR):
+    os.makedirs(REPORT_DIR)
 
 async def send_telegram_msg(message):
+    """텔레그램 알림 전송"""
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"[{BOT_NAME}]\n{message}")
@@ -38,6 +45,7 @@ async def send_telegram_msg(message):
         print(f"❌ 텔레그램 알림 전송 실패: {e}")
 
 def save_trade_history(trade_data):
+    """매매 기록을 CSV에 저장"""
     df = pd.DataFrame([trade_data])
     if not os.path.exists(HISTORY_FILE):
         df.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
@@ -45,7 +53,7 @@ def save_trade_history(trade_data):
         df.to_csv(HISTORY_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
 async def run_bot():
-    print(f"🚀 [{BOT_NAME}] 실전 & 섀도우 봇 동시 가동!")
+    print(f"🚀 [{BOT_NAME}] 실전 & 섀도우 봇 동시 가동! (구조 개편 버전)")
     
     balance = INITIAL_BALANCE
     position = None 
@@ -58,18 +66,20 @@ async def run_bot():
 
     while True:
         try:
+            # 1. 최신 데이터 수집 및 지표 계산
             df_raw = fetch_historical_data(limit=1000)
             df_ind = add_indicators(df_raw)
             
             # --- 1. 실전(Live) 전략 실행 ---
-            importlib.reload(strategy) # 🌟 코드가 덮어씌워지면 즉시 새로고침
+            importlib.reload(strategy) 
             df = strategy.apply_strategy(df_ind.copy(), ema_len=30)
             last = df.iloc[-1]
             
             # --- 2. 섀도우(Shadow) 검증 봇 실행 ---
-            if os.path.exists("src/strategy_shadow.py"):
+            shadow_strat_path = "src/strategies/strategy_shadow.py"
+            if os.path.exists(shadow_strat_path):
                 try:
-                    import strategy_shadow
+                    import strategies.strategy_shadow as strategy_shadow
                     importlib.reload(strategy_shadow)
                     df_shadow = strategy_shadow.apply_strategy(df_ind.copy(), ema_len=30)
                     last_shadow = df_shadow.iloc[-1]
@@ -80,26 +90,25 @@ async def run_bot():
                         print(f"👻 [섀도우 검증] {pos_type} 가상 진입 포착! (가격: {last_shadow['close']})")
                     
                     elif shadow_position is not None:
-                        # 🌟 개선점 1: 롱/숏 구분하여 정확한 ROE(수익률) 계산
+                        # 수익률(ROE) 계산
                         if shadow_position['type'] == 'LONG':
                             shadow_roe = (last_shadow['close'] - shadow_position['price']) / shadow_position['price'] * LEVERAGE
                         else: # SHORT
                             shadow_roe = (shadow_position['price'] - last_shadow['close']) / shadow_position['price'] * LEVERAGE
                         
-                        # 타겟 익절/손절 도달 확인
                         if shadow_roe >= TARGET_ROE:
-                            print(f"👻 [섀도우 검증] 🎯 익절(TP) 도달! 가상 포지션 종료 (ROE: +{shadow_roe*100:.2f}%)")
+                            print(f"👻 [섀도우 검증] 🎯 익절(TP) 도달! (ROE: +{shadow_roe*100:.2f}%)")
                             shadow_position = None
                         elif shadow_roe <= STOPLOSS_ROE:
-                            print(f"👻 [섀도우 검증] ❌ 손절(SL) 도달! 가상 포지션 종료 (ROE: {shadow_roe*100:.2f}%)")
+                            print(f"👻 [섀도우 검증] ❌ 손절(SL) 도달! (ROE: {shadow_roe*100:.2f}%)")
                             shadow_position = None
                 except Exception as e:
-                    pass # 섀도우 에러는 무시
+                    print(f"⚠️ 섀도우 봇 실행 중 사소한 에러: {e}")
 
             current_time = datetime.now(KST)
             current_price = last['close']
             
-            # --- 3. 실전 포지션 진입/청산 로직 (기존과 동일) ---
+            # --- 3. 실전 포지션 진입/청산 로직 ---
             if position is None:
                 if last['Long_Signal'] or last['Short_Signal']:
                     pos_type = "LONG" if last['Long_Signal'] else "SHORT"
@@ -149,12 +158,12 @@ async def run_bot():
                     close_reason = "손절(SL)"
 
                 if close_reason:
-                    msg = f"🏁 [{close_reason} 완료] {pos_type} 포지션 종료\n💵 순손익: {net_trade_pnl:.2f} USDT (ROE: {roe_pct*100:.2f}%)"
+                    msg = f"🏁 [{close_reason} 완료] {pos_type} 종료\n💵 순손익: {net_trade_pnl:.2f} USDT (ROE: {roe_pct*100:.2f}%)"
                     print(msg)
                     await send_telegram_msg(msg)
                     
-                    # 🌟 매매 일지 기록 저장
-                    trade_record = {
+                    # 매매 일지 기록
+                    save_trade_history({
                         "진입시간": position['entry_time'].strftime('%Y-%m-%d %H:%M:%S'),
                         "청산시간": current_time.strftime('%Y-%m-%d %H:%M:%S'),
                         "포지션": pos_type,
@@ -163,12 +172,11 @@ async def run_bot():
                         "순손익(USDT)": round(net_trade_pnl, 2),
                         "최종ROE(%)": round(roe_pct * 100, 2),
                         "종료사유": close_reason
-                    }
-                    save_trade_history(trade_record)
-                    
+                    })
                     position = None
                     if close_reason == "강제청산(LIQ)": break
 
+            # 3분 주기 수동 동기화 슬립
             now = datetime.now(KST)
             next_run = now.replace(second=0, microsecond=0) + timedelta(minutes=3 - (now.minute % 3))
             sleep_seconds = (next_run - now).total_seconds()

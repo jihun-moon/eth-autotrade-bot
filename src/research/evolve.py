@@ -5,8 +5,10 @@ import pandas as pd
 import vectorbt as vbt
 from openai import OpenAI
 from dotenv import load_dotenv
-from fetcher import fetch_historical_data
-from indicators import add_indicators
+
+# [경로 수정] 새 구조에 맞춘 모듈 임포트
+from utils.fetcher import fetch_historical_data
+from utils.indicators import add_indicators
 
 load_dotenv()
 
@@ -19,11 +21,12 @@ client = OpenAI(
 def test_code_syntax():
     """AI가 짠 코드가 에러 없이 돌아가는지 가상 테스트"""
     try:
-        # 🌟 해결점 1: 매물대 계산을 위해 최소 480개 이상이 필요하므로 1000개로 수정!
+        # 매물대 계산을 위해 최소 480개 이상이 필요하므로 1000개 수집
         df = fetch_historical_data(limit=1000)
         df = add_indicators(df)
         
-        import strategy_candidate
+        # [경로 수정] strategies 폴더 내의 후보 전략 파일을 불러옵니다
+        import strategies.strategy_candidate as strategy_candidate
         importlib.reload(strategy_candidate)
         df = strategy_candidate.apply_strategy(df)
         return True, "Success"
@@ -32,7 +35,11 @@ def test_code_syntax():
 
 def generate_and_correct_strategy():
     """AI를 이용해 코드를 개선하고 에러 발생 시 스스로 수정"""
-    with open("src/strategy.py", "r", encoding="utf-8") as f:
+    # [경로 수정] 기존 전략 코드 읽기 (src/strategies/strategy.py)
+    strategy_path = "src/strategies/strategy.py"
+    candidate_path = "src/strategies/strategy_candidate.py"
+    
+    with open(strategy_path, "r", encoding="utf-8") as f:
         current_code = f.read()
         
     system_prompt = "너는 최고 수준의 가상화폐 퀀트 트레이더야. 답변은 반드시 파이썬 코드 블록(```python ... ```)만 출력해."
@@ -73,7 +80,8 @@ def generate_and_correct_strategy():
         else:
             new_code_clean = new_code.replace("```", "").strip()
         
-        with open("src/strategy_candidate.py", "w", encoding="utf-8") as f:
+        # [경로 수정] 후보 전략 파일 저장 (src/strategies/strategy_candidate.py)
+        with open(candidate_path, "w", encoding="utf-8") as f:
             f.write(new_code_clean)
             
         is_valid, error_msg = test_code_syntax()
@@ -89,26 +97,41 @@ def generate_and_correct_strategy():
 def run_backtest_and_chart():
     """완성된 후보 코드로 백테스트를 돌리고 차트 이미지를 저장"""
     print("📊 5000 캔들 백테스트 및 차트 생성 중...")
-    df = fetch_historical_data(limit=5000)
+    df = fetch_historical_data(limit=5000) #
     df = add_indicators(df)
     
-    import strategy_candidate
+    # [경로 수정] 최신 후보 전략을 다시 임포트
+    import strategies.strategy_candidate as strategy_candidate
     importlib.reload(strategy_candidate)
     df = strategy_candidate.apply_strategy(df)
     
     pf = vbt.Portfolio.from_signals(
-        df['close'], entries=df.get('Long_Signal', False), short_entries=df.get('Short_Signal', False),
-        tp_stop=0.02, sl_stop=0.015, fees=0.0005, freq='3m'
+        df['close'], 
+        entries=df.get('Long_Signal', False), 
+        short_entries=df.get('Short_Signal', False),
+        tp_stop=0.02, 
+        sl_stop=0.015, 
+        fees=0.0005, 
+        freq='3m'
     )
     
+    # [경로 수정] 리포트 이미지 저장 경로 (data/reports/report.png)
+    output_image = "data/reports/report.png"
     fig = pf.plot()
-    fig.write_image("report.png", width=1200, height=800)
+    fig.write_image(output_image, width=1200, height=800)
+    
     return pf.total_return() * 100, pf.trades.count()
 
 if __name__ == "__main__":
+    # 필요한 폴더가 없을 경우 생성하는 안전 장치
+    os.makedirs("data/reports", exist_ok=True)
+    os.makedirs("src/strategies", exist_ok=True)
+
     if generate_and_correct_strategy():
         return_pct, trade_count = run_backtest_and_chart()
         print(f"🎉 진화 완료! 예상 수익률: {return_pct:.2f}% (거래 횟수: {trade_count})")
         
-        with open("report_stats.txt", "w") as f:
+        # [경로 수정] 통계 결과 저장 경로 (data/reports/report_stats.txt)
+        stats_file = "data/reports/report_stats.txt"
+        with open(stats_file, "w") as f:
             f.write(f"{return_pct:.2f},{trade_count}")

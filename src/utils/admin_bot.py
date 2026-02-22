@@ -4,11 +4,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from dotenv import load_dotenv
 
+# .env 파일 로드
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-# 🌟 추가됨: 봇을 처음 켰을 때(또는 /start 입력 시) 명령어 안내
+# [경로 설정 정의] 관리의 편의를 위해 경로를 상수로 선언합니다.
+STRAT_DIR = "src/strategies"
+REPORT_DIR = "data/reports"
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/start 명령어 입력 시 인사말과 명령어 안내"""
     user_chat_id = str(update.effective_chat.id)
@@ -31,11 +35,17 @@ async def send_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         print(f"⚠️ [경고] 권한 없는 사용자의 접근 시도 차단! (ID: {user_chat_id})")
         return 
 
-    if not os.path.exists("report.png") or not os.path.exists("src/strategy_candidate.py"):
-        await update.message.reply_text("아직 대기 중인 AI 후보 전략이 없습니다. 서버에서 'python src/evolve.py'를 실행하세요.")
+    # [경로 수정] data/reports/ 와 src/strategies/ 폴더 확인
+    report_image = f"{REPORT_DIR}/report.png"
+    report_stats = f"{REPORT_DIR}/report_stats.txt"
+    candidate_file = f"{STRAT_DIR}/strategy_candidate.py"
+
+    if not os.path.exists(report_image) or not os.path.exists(candidate_file):
+        await update.message.reply_text("아직 대기 중인 AI 후보 전략이 없습니다. 서버에서 'python src/research/evolve.py'를 실행하세요.")
         return
 
-    with open("report_stats.txt", "r") as f:
+    # [경로 수정] 통계 파일 읽기
+    with open(report_stats, "r") as f:
         stats = f.read().split(',')
         return_pct = stats[0]
 
@@ -47,7 +57,8 @@ async def send_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    with open("report.png", "rb") as photo:
+    # [경로 수정] 리포트 이미지 전송
+    with open(report_image, "rb") as photo:
         await context.bot.send_photo(
             chat_id=CHAT_ID,
             photo=photo,
@@ -65,33 +76,47 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer() 
     
+    # 전략 파일 경로 정의
+    live_strat = f"{STRAT_DIR}/strategy.py"
+    backup_strat = f"{STRAT_DIR}/strategy_backup.py"
+    candidate_strat = f"{STRAT_DIR}/strategy_candidate.py"
+    shadow_strat = f"{STRAT_DIR}/strategy_shadow.py"
+    
     if query.data == "DEPLOY_LIVE":
-        shutil.copyfile("src/strategy.py", "src/strategy_backup.py")
-        shutil.copyfile("src/strategy_candidate.py", "src/strategy.py")
+        # [경로 수정] 실전 투입 로직
+        shutil.copyfile(live_strat, backup_strat)
+        shutil.copyfile(candidate_strat, live_strat)
         await query.edit_message_caption("✅ 실전 투입 완료! 메인 봇이 다음 캔들부터 새 코드로 매매합니다.")
         
     elif query.data == "DEPLOY_SHADOW":
-        shutil.copyfile("src/strategy_candidate.py", "src/strategy_shadow.py")
+        # [경로 수정] 섀도우 모드 투입 로직
+        shutil.copyfile(candidate_strat, shadow_strat)
         await query.edit_message_caption("👻 섀도우 모드 투입 완료! 메인 봇이 백그라운드에서 성과를 추적합니다.")
         
     elif query.data == "ROLLBACK":
-        if os.path.exists("src/strategy_backup.py"):
-            shutil.copyfile("src/strategy_backup.py", "src/strategy.py")
+        # [경로 수정] 롤백 로직
+        if os.path.exists(backup_strat):
+            shutil.copyfile(backup_strat, live_strat)
             await query.edit_message_caption("⏪ 롤백 완료! 이전 버전 코드로 즉시 복구되었습니다.")
         else:
             await query.edit_message_caption("⚠️ 백업 파일이 존재하지 않아 롤백할 수 없습니다!")
             
     elif query.data == "REJECT":
-        if os.path.exists("src/strategy_candidate.py"):
-            os.remove("src/strategy_candidate.py")
+        # [경로 수정] 반려 로직
+        if os.path.exists(candidate_strat):
+            os.remove(candidate_strat)
         await query.edit_message_caption("❌ 반려되었습니다. 후보 코드를 폐기합니다.")
 
 if __name__ == "__main__":
+    # 필요한 폴더 생성 확인
+    os.makedirs(STRAT_DIR, exist_ok=True)
+    os.makedirs(REPORT_DIR, exist_ok=True)
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # 🌟 명령어 핸들러 등록
+    # 명령어 핸들러 등록
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", start_command)) # /help를 쳐도 안내가 나오게 추가
+    app.add_handler(CommandHandler("help", start_command))
     app.add_handler(CommandHandler("report", send_report_command))
     
     app.add_handler(CallbackQueryHandler(button_callback))
