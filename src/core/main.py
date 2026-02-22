@@ -28,7 +28,7 @@ TP_PCT = 0.02
 SL_PCT = 0.015             
 FEE_RATE = 0.0005         
 
-# [경로 수정] 데이터 및 리포트 저장 경로
+# [경로 수정] 지훈님 의견 반영: 모든 리포트는 data/reports 폴더에 저장
 REPORT_DIR = "data/reports"
 HISTORY_FILE = f"{REPORT_DIR}/trade_history.csv"
 
@@ -62,7 +62,7 @@ async def run_bot():
     TARGET_ROE = TP_PCT * LEVERAGE      
     STOPLOSS_ROE = -(SL_PCT * LEVERAGE) 
     
-    await send_telegram_msg(f"✅ 양방향 풀-오토 가동 시작! (레버리지 {LEVERAGE}x)")
+    await send_telegram_msg(f"✅ 양방향 풀-오토 가동 시작! (레버리지 {LEVERAGE}x)\n📊 로그 위치: {HISTORY_FILE}")
 
     while True:
         try:
@@ -75,7 +75,7 @@ async def run_bot():
             df = strategy.apply_strategy(df_ind.copy(), ema_len=30)
             last = df.iloc[-1]
             
-            # --- 2. 섀도우(Shadow) 검증 봇 실행 ---
+            # --- 2. 섀도우(Shadow) 검증 봇 실행 및 알림 ---
             shadow_strat_path = "src/strategies/strategy_shadow.py"
             if os.path.exists(shadow_strat_path):
                 try:
@@ -84,26 +84,33 @@ async def run_bot():
                     df_shadow = strategy_shadow.apply_strategy(df_ind.copy(), ema_len=30)
                     last_shadow = df_shadow.iloc[-1]
                     
+                    # 섀도우 진입 시 알림
                     if shadow_position is None and (last_shadow.get('Long_Signal') or last_shadow.get('Short_Signal')):
                         pos_type = "LONG" if last_shadow['Long_Signal'] else "SHORT"
                         shadow_position = {'type': pos_type, 'price': last_shadow['close']}
-                        print(f"👻 [섀도우 검증] {pos_type} 가상 진입 포착! (가격: {last_shadow['close']})")
+                        msg = f"👻 [섀도우 진입] {pos_type} 가상 포지션 시작\n💰 가격: {last_shadow['close']:.2f} USDT"
+                        print(msg)
+                        await send_telegram_msg(msg)
                     
+                    # 섀도우 결과 알림
                     elif shadow_position is not None:
-                        # 수익률(ROE) 계산
                         if shadow_position['type'] == 'LONG':
                             shadow_roe = (last_shadow['close'] - shadow_position['price']) / shadow_position['price'] * LEVERAGE
                         else: # SHORT
                             shadow_roe = (shadow_position['price'] - last_shadow['close']) / shadow_position['price'] * LEVERAGE
                         
                         if shadow_roe >= TARGET_ROE:
-                            print(f"👻 [섀도우 검증] 🎯 익절(TP) 도달! (ROE: +{shadow_roe*100:.2f}%)")
+                            msg = f"👻 [섀도우 익절] 🎯 타겟 도달!\n📈 ROE: +{shadow_roe*100:.2f}%"
+                            print(msg)
+                            await send_telegram_msg(msg)
                             shadow_position = None
                         elif shadow_roe <= STOPLOSS_ROE:
-                            print(f"👻 [섀도우 검증] ❌ 손절(SL) 도달! (ROE: {shadow_roe*100:.2f}%)")
+                            msg = f"👻 [섀도우 손절] ❌ 리스크 관리 종료\n📉 ROE: {shadow_roe*100:.2f}%"
+                            print(msg)
+                            await send_telegram_msg(msg)
                             shadow_position = None
                 except Exception as e:
-                    print(f"⚠️ 섀도우 봇 실행 중 사소한 에러: {e}")
+                    print(f"⚠️ 섀도우 봇 에러: {e}")
 
             current_time = datetime.now(KST)
             current_price = last['close']
@@ -176,7 +183,7 @@ async def run_bot():
                     position = None
                     if close_reason == "강제청산(LIQ)": break
 
-            # 3분 주기 수동 동기화 슬립
+            # 3분 주기 슬립
             now = datetime.now(KST)
             next_run = now.replace(second=0, microsecond=0) + timedelta(minutes=3 - (now.minute % 3))
             sleep_seconds = (next_run - now).total_seconds()
