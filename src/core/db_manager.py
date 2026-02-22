@@ -24,7 +24,6 @@ class ActivePosition(Base):
     entry_price = Column(Float)
     amount = Column(Float)
     margin = Column(Float)
-    # [추가] 당시 결정된 동적 TP/SL 보존
     tp_pct = Column(Float)
     sl_pct = Column(Float)
 
