@@ -1,5 +1,5 @@
 import os
-import sys # 🌟 추가
+import sys
 import traceback
 import importlib
 import pandas as pd
@@ -7,23 +7,27 @@ import vectorbt as vbt
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# 🌟 경로 설정 추가: 상위 폴더(src)를 인식하게 함
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 🌟 경로 설정: 상위 폴더(src)를 인식하게 하여 utils, strategies를 찾을 수 있게 함
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(BASE_DIR)
 
 from utils.fetcher import fetch_historical_data
 from utils.indicators import add_indicators
 
 load_dotenv()
 
+# Upstage Solar-Pro API 설정
 client = OpenAI(
     api_key=os.getenv('UPSTAGE_API_KEY'),
     base_url="https://api.upstage.ai/v1" 
 )
 
 def test_code_syntax():
-    """AI가 짠 코드가 에러 없이 돌아가는지 가상 테스트"""
+    """AI가 짠 코드가 에러 없이 돌아가는지 가상 테스트 (자가 검증)"""
     try:
-        df = add_indicators(fetch_historical_data(limit=1000))
+        # 지표 계산을 위해 충분한 1000개 데이터 확보
+        raw_df = fetch_historical_data(limit=1000)
+        df = add_indicators(raw_df)
         
         # 동적 로드 및 리로드
         import strategies.strategy_candidate as s_cand
@@ -31,6 +35,7 @@ def test_code_syntax():
             
         res = s_cand.apply_strategy(df)
         
+        # 🌟 반환 형식 검증: (df, params_dict)
         if not isinstance(res, tuple) or len(res) != 2:
             return False, "반환 형식이 (df, params_dict)가 아닙니다."
         return True, "Success"
@@ -39,7 +44,8 @@ def test_code_syntax():
 
 def generate_and_correct_strategy():
     """AI를 이용해 코드를 개선하고 에러 발생 시 스스로 수정"""
-    strategy_path = "src/strategies/strategy.py"
+    strategy_path = os.path.join(BASE_DIR, "strategies/strategy.py")
+    
     with open(strategy_path, "r", encoding="utf-8") as f:
         current_code = f.read()
         
@@ -58,8 +64,10 @@ def generate_and_correct_strategy():
     2. **필터**: CVD가 CVD_Signal을 골든크로스(Long) / 데드크로스(Short) 하는 수급 반전을 필수로 확인해.
     3. **추세 방어**: ADX가 25 이상이면서 가격이 EMA_200과 너무 멀리(예: 2% 이상) 떨어져 있을 때는 역추세 진입을 자제해.
     4. **거래 빈도**: 필터가 너무 빡빡해서 거래가 0회면 안 돼. 수익이 안 나더라도 일단 거래가 발생하도록 유연하게 짜줘.
-    5. **반환 형식**: 반드시 `return df, params` 형태여야 함.
+    5. **반환 형식**: 반드시 `return df, params` 형태여야 하며, params에는 'tp'(익절), 'sl'(손절) 비율이 포함되어야 해.
     """
+    
+    candidate_path = os.path.join(BASE_DIR, "strategies/strategy_candidate.py")
     
     for attempt in range(1, 4):
         print(f"🤖 AI 전략 진화 시도 ({attempt}/3)...")
@@ -71,7 +79,7 @@ def generate_and_correct_strategy():
         new_code = response.choices[0].message.content
         new_code_clean = new_code.split("```python")[1].split("```")[0].strip() if "```python" in new_code else new_code.strip()
         
-        candidate_path = "src/strategies/strategy_candidate.py"
+        # 후보 파일 저장
         with open(candidate_path, "w", encoding="utf-8") as f:
             f.write(new_code_clean)
             
@@ -86,23 +94,24 @@ def generate_and_correct_strategy():
     return None
 
 def run_backtest_and_chart():
-    """후보 전략 검증 및 상세 로그 출력"""
+    """후보 전략을 10일치 데이터(5000캔들)로 검증하고 차트 생성"""
     print("📊 10일 데이터 백테스트 및 리포트 생성 중...")
-    df = add_indicators(fetch_historical_data(limit=5000))
+    raw_df = fetch_historical_data(limit=5000)
+    df = add_indicators(raw_df)
     
     import strategies.strategy_candidate as s_cand
     importlib.reload(s_cand)
     df, params = s_cand.apply_strategy(df)
     
     # 🌟 추가: 신호 개수 실시간 디버깅 로그
-    l_count = df['Long_Signal'].sum()
-    s_count = df['Short_Signal'].sum()
+    l_count = df['Long_Signal'].sum() if 'Long_Signal' in df.columns else 0
+    s_count = df['Short_Signal'].sum() if 'Short_Signal' in df.columns else 0
     print(f"🔍 [디버깅] 포착된 신호 - Long: {l_count}회, Short: {s_count}회")
     
     if l_count + s_count == 0:
         print("⚠️ 경고: 거래 신호가 0회입니다. AI가 너무 빡빡한 조건을 생성했을 가능성이 높습니다.")
 
-    # 백테스트 실행
+    # 백테스트 실행 (10배 레버리지 반영)
     pf = vbt.Portfolio.from_signals(
         df['close'], 
         entries=df.get('Long_Signal', False), 
@@ -111,12 +120,15 @@ def run_backtest_and_chart():
         sl_stop=params.get('sl', 0.015), 
         fees=0.0005, 
         freq='3m',
-        leverage=10,        # 🌟 10배 레버리지 추가
-        leverage_fixed=True # 레버리지 고정
+        leverage=10,        # 🌟 10배 레버리지 반영
+        leverage_fixed=True # 레버리지 고정 테스트
     )
     
-    report_dir = "data/reports"
+    # 리포트 저장 경로 확인
+    report_dir = os.path.join(os.path.dirname(BASE_DIR), "data/reports")
     os.makedirs(report_dir, exist_ok=True)
+    
+    # 차트 이미지 저장
     pf.plot().write_image(f"{report_dir}/report.png", width=1200, height=800)
     
     return pf.total_return() * 100, pf.trades.count()
@@ -124,9 +136,13 @@ def run_backtest_and_chart():
 if __name__ == "__main__":
     if generate_and_correct_strategy():
         res_pct, count = run_backtest_and_chart()
-        print(f"📊 백테스트 결과: 수익률 {res_pct:.2f}%, 거래 횟수 {count}회")
         
-        with open("data/reports/report_stats.txt", "w") as f:
+        print(f"📊 백테스트 결과: 수익률 {res_pct:.2f}%, 거래 횟수 {count}회")
+        print("💡 텔레그램에서 /report를 입력하여 차트를 확인하고 실전 반영 여부를 결정하세요.")
+        
+        # 통계 데이터 저장 (admin_bot이 읽어감)
+        stats_file = os.path.join(os.path.dirname(BASE_DIR), "data/reports/report_stats.txt")
+        with open(stats_file, "w") as f:
             f.write(f"{res_pct:.2f},{count}")
         
         print(f"🎉 진화 작업 완료!")
