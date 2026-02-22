@@ -2,7 +2,6 @@ import os
 from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime
 
 Base = declarative_base()
 
@@ -14,7 +13,6 @@ class TradeHistory(Base):
     pos_type = Column(String)
     entry_price = Column(Float)
     exit_price = Column(Float)
-    pnl_usdt = Column(Float)
     roe_pct = Column(Float)
     exit_reason = Column(String)
 
@@ -26,7 +24,7 @@ class ActivePosition(Base):
     entry_price = Column(Float)
     amount = Column(Float)
     margin = Column(Float)
-    # [추가] 동적 TP/SL 값 보존
+    # [추가] 당시 결정된 동적 TP/SL 보존
     tp_pct = Column(Float)
     sl_pct = Column(Float)
 
