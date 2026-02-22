@@ -1,217 +1,148 @@
-# -*- coding: utf-8 -*-
-"""
-diverge_structure_strategy.py
-
-다이버전스 + 매물대(Structure) 돌파 전략
-- VAL / VAH / CVD 가 이미 존재한다면 재계산하지 않음
-- vectorbt 백테스트 시 leverage 를 사용하지 않고 risk_per_trade 로 포지션 사이징
-- ATR 기반 동적 SL / TP 를 적용
-- 모든 연산을 pandas / pandas_ta 로 벡터화
-
-Author: Upstage Solar (Open 100B)
-Date  : 2026‑02‑23
-"""
-
-from __future__ import annotations
-
+# --------------------------------------------------------------
+# 1️⃣ 라이브러리 임포트
+# --------------------------------------------------------------
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
-from typing import Literal, Optional, Dict
-
+import pandas_ta as ta               # TA‑library (EMA, ADX, RSI 등)
+import vectorbt as vbt               # vectorbt core
+from vectorbt.signals import Signal # 신호 객체
+from vectorbt.pro import Pro        # (선택) ATR 등 고급 기능
 # --------------------------------------------------------------
-# 1️⃣ 지표·필터 계산 (필요 시 한 번만 계산)
-# --------------------------------------------------------------
-def _ensure_indicator(df: pd.DataFrame,
-                     col: str,
-                     length: int,
-                     close_col: str = "close",
-                     append: bool = True) -> pd.DataFrame:
-    """이미 존재하면 반환, 없으면 pandas_ta 로 계산하고 반환."""
-    if col in df.columns:
-        return df
-    # pandas_ta 가 자동으로 NaN을 채우지 않으므로 .fillna(0) 으로 초기화
-    df = df.copy()
-    df = df.ta.ta_func(
-        col,
-        length=length,
-        close=close_col,
-        append=append,
-        # 예시: EMA, ADX, RSI, ATR, VAL, VAH, CVD 등은 각각 별도 함수
-        # 여기서는 간단히 ta.ema, ta.adx, ta.rsi, ta.atr, ta.val, ta.vah, ta.cvd 를 사용
-        # 실제 사용 시 적절히 교체
-        # 예: df = df.ta.ema(length, close=close_col, append=append)
-    )
-    return df
 
-
-def _compute_cvd_signal(df: pd.DataFrame,
-                        cfd_len: int = 20,
-                        close_col: str = "close",
-                        append: bool = True) -> pd.DataFrame:
-    """CVD와 같은 지표에 대한 ‘Signal’(예: SMA) 을 만든다."""
-    if "CVD_Signal" in df.columns:
-        return df
-    df = df.copy()
-    df = df.ta.sma(length=cfd_len, close=close_col, append=append)
-    df.rename(columns={close_col: "CVD_Signal"}, inplace=True)
-    return df
-
-
-# --------------------------------------------------------------
-# 2️⃣ 메인 전략 로직
-# --------------------------------------------------------------
-def generate_signals(
-    df: pd.DataFrame,
-    *,
-    ema_len: int = 30,
-    adx_len: int = 14,
-    rsi_len: int = 14,
-    atr_len: int = 14,
-    low_lookback: int = 5,
-    high_lookback: int = 5,
-    val_offset: float = 0.001,
-    vah_offset: float = 0.001,
-    cfd_margin: float = 0.0,
-    capital: float = 100_000.0,
-    tp_factor: float = 0.02,   # TP = entry_price + tp_factor * ATR
-    sl_factor: float = 0.015,  # SL = entry_price - sl_factor * ATR
-    risk_per_trade: float = 0.01,   # 전체 자본의 % 로 포지션 사이즈 결정
-    commission: float = 0.0005,
-    slippage: float = 0.0005,
-) -> tuple[pd.DataFrame, Dict[str, float]]:
+def apply_strategy(df: pd.DataFrame,
+                   ema_len: int = 30,
+                   tp: float = 0.02,          # 2% 목표 수익
+                   sl: float = 0.015,         # 1.5% 손절
+                   adx_len: int = 14,
+                   lookback_len: int = 5,
+                   use_dynamic_sl: bool = False) -> tuple[pd.DataFrame, dict]:
     """
-    다이버전스 + 매물대(Structure) 돌파 전략 신호 생성.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        OHLCV 데이터가 들어있는 DataFrame.
-    ema_len, adx_len, rsi_len, atr_len : int
-        각각 EMA, ADX, RSI, ATR 계산에 사용되는 기간.
-    low_lookback, high_lookback : int
-        저점·고점 look‑back 윈도우.
-    val_offset, vah_offset : float
-        VAL/VAH 를 0.1% 정도 여유 있게 판정하기 위한 오프셋.
-    cfd_margin : float
-        CVD 와 CVD_Signal 간 비교 마진(예: 0 → 정확히 일치, 양수 → CVD > CVD_Signal 등).
-    capital, risk_per_trade : float
-        백테스트에 사용할 초기 자본·위험 비율.
-    tp_factor, sl_factor : float
-        ATR 기반 TP/SL 비율.
-    commission, slippage : float
-        백테스트 시 적용할 수수료·슬리피지 비율.
-
-    Returns
-    -------
-    df : pd.DataFrame
-        원본 DataFrame에 다음 컬럼이 추가된 형태:
-        * EMA_<len>, ADX, RSI, ATR, VAL, VAH, CVD, CVD_Signal
-        * Low_lookback, High_lookback
-        * Long_Entry, Short_Entry, Signal, SL, TP, Exit
-    settings : dict
-        vectorbt.backtest 에 바로 넘겨줄 수 있는 설정 dict.
+    다이버전스 + 매물대(VAL/VAH) 전략 – 벡터‑베이스 구현
+    -------------------------------------------------
+    - VAL, VAH, CVD, CVD_Signal 컬럼은 이미 존재한다고 가정
+    - LONG : VAL 하향 이탈 + Bullish Divergence + CVD > CVD_Signal
+               (ADX ≤ 25 OR price ≥ EMA)
+    - SHORT: VAH 상향 이탈 + Bearish Divergence + CVD < CVD_Signal
+               (ADX ≤ 25 OR price ≤ EMA)
+    - TP/SL 비율 적용, 동적 SL(ATR 기반) 옵션 제공
+    - vectorbt 사용 시 `leverage` 파라미터는 전혀 쓰지 않음 (기본 1)
+    반환값:
+        df : 원본에 Signal, Position, ExitSignal 컬럼이 추가된 DataFrame
+        cfg: 설정값 (tp, sl, …)
     """
-    # ---------- 0️⃣ 기본 복사 ----------
-    df = df.copy()
+    # --------------------------------------------------------------
+    # 2️⃣ 필수 컬럼 체크 (중복 방지)
+    # --------------------------------------------------------------
+    required = ['VAL', 'VAH', 'CVD', 'CVD_Signal', 'ADX', 'EMA_200', 'RSI']
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"필요한 컬럼이 누락되었습니다: {missing}")
 
-    # ---------- 1️⃣ 지표 계산 ----------
-    # 1‑1) EMA(ema_len) – 매물대 구조 판단에 사용
-    df = _ensure_indicator(df, "EMA_" + str(ema_len), ema_len, close_col="close", append=True)
+    # --------------------------------------------------------------
+    # 3️⃣ EMA 재계산 (필요 시 기존 EMA_200 대신 동적 EMA 사용)
+    # --------------------------------------------------------------
+    # 기존 EMA_200 가 있으면 그대로 사용하고, 없으면 새로 계산
+    if 'EMA_200' in df.columns:
+        df['EMA'] = df['EMA_200']
+    else:
+        df['EMA'] = df['close'].ewm(span=ema_len, adjust=False).mean()
 
-    # 1‑2) ADX (trend filter)
-    df = _ensure_indicator(df, "ADX", adx_len, close_col="close", append=True)
+    # --------------------------------------------------------------
+    # 4️⃣ 다이버전스 지표 (Bullish / Bearish)
+    # --------------------------------------------------------------
+    # 5‑bar look‑back minima / maxima (한 번만 계산 → 재사용)
+    low_lookback = df['low'].rolling(window=lookback_len).min()
+    high_lookback = df['high'].rolling(window=lookback_len).max()
 
-    # 1‑3) RSI (momentum)
-    df = _ensure_indicator(df, "RSI", rsi_len, close_col="close", append=True)
+    # Bullish divergence: 현재 저점이 look‑back 저점 이하이고 RSI 상승
+    df['Bull_Div'] = (df['low'] <= low_lookback) & (df['RSI'] > df['RSI'].shift(1))
 
-    # 1‑4) ATR (SL/TP 계산 기반)
-    df = _ensure_indicator(df, "ATR", atr_len, close_col="close", append=True)
+    # Bearish divergence: 현재 고점이 look‑back 고점 이상이고 RSI 하락
+    df['Bear_Div'] = (df['high'] >= high_lookback) & (df['RSI'] < df['RSI'].shift(1))
 
-    # 1‑5) VAL / VAH (이미 존재한다면 재계산 X)
-    df = _ensure_indicator(df, "VAL", ema_len, close_col="close", append=True)
-    df = _ensure_indicator(df, "VAH", ema_len, close_col="close", append=True)
+    # --------------------------------------------------------------
+    # 5️⃣ 매물대(VAL/VAH) 돌파 여부
+    # --------------------------------------------------------------
+    df['Below_Structure'] = df['close'] < df['VAL']          # VAL 하향 이탈
+    df['Above_Structure'] = df['close'] > df['VAH']          # VAH 상향 이탈
 
-    # 1‑6) CVD & CVD_Signal
-    df = _ensure_indicator(df, "CVD", ema_len, close_col="close", append=True)
-    df = _compute_cvd_signal(df, cfd_len=ema_len, close_col="close")
-
-    # ---------- 2️⃣ 저점·고점 Look‑back ----------
-    df["Low_lookback"] = df["low"].rolling(window=low_lookback).min()
-    df["High_lookback"] = df["high"].rolling(window=high_lookback).max()
-
-    # ---------- 3️⃣ 다이버전스 컬럼 ----------
-    # Bull divergence (롱 진입)
-    bull_div = (df["low"] <= df["Low_lookback"]) & (df["RSI"] > df["RSI"].shift(1))
-
-    # Bear divergence (숏 진입)
-    bear_div = (df["high"] >= df["High_lookback"]) & (df["RSI"] < df["RSI"].shift(1))
-
-    # ---------- 4️⃣ 구조(Structure) 이탈/돌파 ----------
-    below_structure = df["close"] < (df["VAL"] * (1.0 + val_offset))
-    above_structure = df["close"] > (df["VAH"] * (1.0 - vah_offset))
-
-    # ---------- 5️⃣ CVD 확인 (마진 적용) ----------
-    #   * 롱: CVD > CVD_Signal + cfd_margin
-    #   * 숏: CVD < CVD_Signal - cfd_margin
-    long_cvd_ok = df["CVD"] > (df["CVD_Signal"] + cfd_margin)
-    short_cvd_ok = df["CVD"] < (df["CVD_Signal"] - cfd_margin)
-
-    # ---------- 6️⃣ 엔트리 시그널 ----------
-    #   * 롱 : Below Structure + Bull Div + CVD OK + (ADX ≤ 25 OR close ≥ EMA_200)
-    #   * 숏 : Above Structure + Bear Div + CVD OK + (ADX ≤ 25 OR close ≤ EMA_200)
-    df["Long_Entry"] = (
-        below_structure
-        & bull_div
-        & long_cvd_ok
-        & ((df["ADX"] <= 25) | (df["close"] >= df["EMA_200"]))
+    # --------------------------------------------------------------
+    # 6️⃣ 진입 로직 (Long / Short)
+    # --------------------------------------------------------------
+    # LONG 진입 조건
+    long_entry = (
+        df['Below_Structure'] &
+        df['Bull_Div'] &
+        (df['CVD'] > df['CVD_Signal']) &
+        ((df['ADX'] <= 25) | (df['close'] >= df['EMA']))   # ADX ≤ 25 혹은 EMA 위
     )
 
-    df["Short_Entry"] = (
-        above_structure
-        & bear_div
-        & short_cvd_ok
-        & ((df["ADX"] <= 25) | (df["close"] <= df["EMA_200"]))
+    # SHORT 진입 조건
+    short_entry = (
+        df['Above_Structure'] &
+        df['Bear_Div'] &
+        (df['CVD'] < df['CVD_Signal']) &
+        ((df['ADX'] <= 25) | (df['close'] <= df['EMA']))   # ADX ≤ 25 혹은 EMA 아래
     )
 
-    # ---------- 7️⃣ EMA_200 (전반적인 장기 추세) ----------
-    df["EMA_200"] = df["close"].ta.ema(length=200, close="close", append=True).rename("EMA_200")
+    # --------------------------------------------------------------
+    # 7️⃣ Signal 생성 (vectorbt.Signal 활용)
+    # --------------------------------------------------------------
+    # 0 = No position, 1 = Long, -1 = Short
+    # 진입 신호가 동시에 발생하지 않도록 우선순위 지정
+    df['Entry_Signal'] = np.where(long_entry, 1,
+                          np.where(short_entry, -1, 0))
 
-    # ---------- 8️⃣ 신호 통합 ----------
-    # 1 = 롱, -1 = 숏, 0 = 평탄
-    df["Signal"] = np.where(df["Long_Entry"], 1,
-            np.where(df["Short_Entry"], -1, 0))
+    # Lag=1 로 한 바(bar) 뒤에 포지션을 잡도록 shift
+    df['Position'] = vbt.signals.shift(df['Entry_Signal'], lag=1)
 
-    # ---------- 9️⃣ ATR 기반 SL / TP ----------
-    #   entry_price 를 전날 시그널 값(0)으로 보정 → NaN 방지
-    entry_price = df["Signal"].shift(1).astype(int) * df["close"]
-    df["SL"] = entry_price - sl_factor * df["ATR"]
-    df["TP"] = entry_price + tp_factor * df["ATR"]
+    # --------------------------------------------------------------
+    # 8️⃣ TP/SL 로직
+    # --------------------------------------------------------------
+    # 고정 TP/SL 비율 (절대 가격)
+    df['TP'] = df['close'] * (1 + tp)   # 목표가격
+    df['SL'] = df['close'] * (1 - sl)   # 손절가격
 
-    # ---------- 🔟 청산(Exit) 로직 ----------
-    #   * 롱 : 가격이 SL 이하 OR TP 도달
-    #   * 숏 : 가격이 SL 이상 OR TP 도달
-    long_exit = df["Signal"] == 1 & (df["close"] <= df["SL"]) | (df["close"] >= df["TP"])
-    short_exit = df["Signal"] == -1 & (df["close"] >= df["SL"]) | (df["close"] <= df["TP"])
+    # 동적 SL (ATR 기반) – 옵션 플래그에 따라 활성화
+    if use_dynamic_sl:
+        df['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+        # ATR * 2 로 동적 손절 구간을 잡는다.
+        df['SL_Dynamic'] = df['close'] - df['ATR'] * 2
 
-    #   * 평탄 상태(0)에서 진입/청산 전환 시 청산 신호 추가
-    #   * 기존 시그널과 동일한 방향일 경우(연속 포지션) 기존 청산 조건을 그대로 적용
-    df["Exit"] = (
-        long_exit.astype(int) * 1 +
-        short_exit.astype(int) * -1 +
-        (df["Signal"] != df["Signal"].shift(1)).astype(int) * 0   # 무플랫 -> 플랫 전환 시 청산
+    # Exit 시그널 생성
+    # (1) 고정 SL : price <= SL
+    # (2) 동적 SL : price <= SL_Dynamic (if 사용)
+    # (3) 목표 TP : price >= TP
+    exit_long = (
+        (df['Position'] == 1) &
+        ((df['close'] >= df['TP']) |
+         ((use_dynamic_sl) & (df['close'] <= df['SL_Dynamic'])))
+    )
+    exit_short = (
+        (df['Position'] == -1) &
+        ((df['close'] <= df['SL']) |
+         ((use_dynamic_sl) & (df['close'] >= df['SL_Dynamic'])))
     )
 
-    # ---------- 1️⃣1️⃣ NaN 정리 ----------
-    df = df.fillna(method="bfill").fillna(method="ffill")   # 초기 구간 NaN 방지
+    # Lag=1 로 청산 시점이 다음 바가 되도록 shift
+    df['Exit_Long'] = vbt.signals.shift(exit_long, lag=1)
+    df['Exit_Short'] = vbt.signals.shift(exit_short, lag=1)
 
-    # ---------- 1️⃣2️⃣ 백테스트용 설정 반환 ----------
-    settings: Dict[str, float] = {
-        "capital": capital,
-        "commission": commission,
-        "slippage": slippage,
-        "risk_per_trade": risk_per_trade,
-        # leverage 절대 금지 → 명시적으로 넣지 않음
-    }
+    # 최종 Exit 시그널 (포지션이 바뀐 시점에 0 으로 전환)
+    df['Exit_Signal'] = np.where(df['Exit_Long'], -1,
+                          np.where(df['Exit_Short'], 1, 0))
 
-    return df, settings
+    # 포지션을 Exit 시점 바로 뒤에 0 으로 바꾸는 lag‑1 적용
+    df['Position'] = vbt.signals.shift(df['Exit_Signal'], lag=1)
+
+    # --------------------------------------------------------------
+    # 9️⃣ 최종 컬럼 정리
+    # --------------------------------------------------------------
+    # Signal 컬럼을 명시적으로 반환 (entry 신호만 포함)
+    df['Signal'] = df['Entry_Signal']
+
+    # 설정값 반환 (백테스트에 그대로 사용 가능)
+    cfg = {'ema_len': ema_len, 'tp': tp, 'sl': sl,
+           'adx_len': adx_len, 'lookback_len': lookback_len,
+           'use_dynamic_sl': use_dynamic_sl}
+    return df, cfg

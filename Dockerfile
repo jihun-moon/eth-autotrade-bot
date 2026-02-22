@@ -23,4 +23,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 6. 실행 명령어
-CMD ["python", "src/main.py"]
+CMD ["python", "src/core/main.py"]
