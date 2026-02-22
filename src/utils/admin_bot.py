@@ -114,7 +114,7 @@ async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption="📊 **실시간 시장 분석 차트 리포트**"
             )
         
-        # 5. 상세 분석 텍스트 전송 (Markdown 지원)
+        # 5. 상세 분석 텍스트 전송 (Markdown 지원, 1024자 제한 우회)
         await update.message.reply_text(f"🧠 **AI 정밀 분석 결과**\n\n{analysis}", parse_mode='Markdown')
         await thinking_msg.delete()
         
@@ -153,20 +153,35 @@ async def status_command(update, context):
     finally: db.close()
 
 async def evolve_command(update, context):
-    """/evolve: AI 전략 진화 프로세스"""
+    """/evolve: AI 전략 진화 프로세스 (실패 원인 보고 강화)"""
     if str(update.effective_chat.id) != str(CHAT_ID): return
     msg = await update.message.reply_text("🤖 **AI가 시장 데이터를 학습하며 전략을 최적화하고 있습니다...**")
     try:
-        if await asyncio.to_thread(generate_and_correct_strategy):
+        # 🌟 수정된 evolve.py 인터페이스: (성공여부, 사유) 수신
+        success, reason = await asyncio.to_thread(generate_and_correct_strategy)
+        
+        if success:
             pct, count = await asyncio.to_thread(run_backtest_and_chart)
-            await msg.edit_text(f"🎉 **전략 진화 완료!**\n📈 **기대 수익률**: `{pct:.2f}%` | **거래 횟수**: `{count}회`")
+            await msg.edit_text(
+                f"🎉 **새로운 전략이 탄생했습니다!**\n\n"
+                f"📈 **기대 수익률**: `{pct:.2f}%` (1배율 기준)\n"
+                f"📊 **테스트 거래**: `{count}회` (최근 10일)\n\n"
+                f"상세 리포트 차트를 전송합니다..."
+            )
             await send_report_command(update, context)
         else:
-            await msg.edit_text("❌ **유효한 전략 생성에 실패했습니다.**")
-    except Exception as e: await msg.edit_text(f"⚠️ **에러 발생**: {str(e)}")
+            # 실패 원인 상세 보고
+            error_report = (
+                f"❌ **전략 진화 실패**\n\n"
+                f"🧐 **원인**: {reason[:500]}..." # 너무 길면 잘라서 전송
+            )
+            await msg.edit_text(error_report)
+            
+    except Exception as e: 
+        await msg.edit_text(f"⚠️ **시스템 에러**: {str(e)}")
 
 async def send_report_command(update, context):
-    """/report: 후보 전략 리포트 확인"""
+    """/report: 후보 전략 리포트 확인 및 결재 버튼 전송"""
     if str(update.effective_chat.id) != str(CHAT_ID): return
     report_path = os.path.join(REPORT_DIR, "report.png")
     
@@ -178,7 +193,7 @@ async def send_report_command(update, context):
     
     with open(report_path, "rb") as photo:
         await context.bot.send_photo(
-            chat_id=CHAT_ID, # 🌟 chat_id로 수정 완료
+            chat_id=CHAT_ID, # 🌟 chat_id 오타 수정 완료
             photo=photo, 
             caption="🤖 **AI 개선 전략 승인 요청**\n보스, 위 전략을 실전에 반영할까요?", 
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -208,5 +223,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_chat)) # 🌟 대화형 챗 핸들러
     app.add_handler(CallbackQueryHandler(button_callback))
     
-    print("👔 Bottom-Scanner AI 에이전트 가동 중...")
+    print("👔 Bottom-Scanner AI 에이전트 가동 중 (이미지 분리 전송 모드)...")
     app.run_polling()
