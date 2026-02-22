@@ -1,17 +1,30 @@
 import os
 import asyncio
-import pandas as pd
+import logging
 import importlib
 from datetime import datetime, timedelta, timezone
 from telegram import Bot
 from dotenv import load_dotenv
 
-# [경로 수정] 새 구조에 맞춘 유틸리티 모듈 임포트
+# [구조 개편] 새 폴더 구조에 맞춘 모듈 임포트
 from utils.fetcher import fetch_historical_data
 from utils.indicators import add_indicators
-
-# [경로 수정] 전략 모듈 임포트 (패키지 경로 적용)
 import strategies.strategy as strategy 
+
+# [추가] DB 및 트레이더 모듈 임포트
+from core.db_manager import init_db, SessionLocal, ActivePosition, TradeHistory
+from core.trader import fetch_real_balance, execute_order
+
+# 1. 구조화된 로깅 설정 (콘솔 + 파일 기록)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("data/reports/bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("BottomScanner")
 
 load_dotenv()
 
@@ -22,19 +35,9 @@ BOT_NAME = "Bottom-Scanner"
 KST = timezone(timedelta(hours=9))
 
 # 매매 파라미터
-INITIAL_BALANCE = 1300.0  
 LEVERAGE = 10             
 TP_PCT = 0.02             
 SL_PCT = 0.015             
-FEE_RATE = 0.0005         
-
-# [경로 수정] 지훈님 의견 반영: 모든 리포트는 data/reports 폴더에 저장
-REPORT_DIR = "data/reports"
-HISTORY_FILE = f"{REPORT_DIR}/trade_history.csv"
-
-# 필요한 폴더 생성
-if not os.path.exists(REPORT_DIR):
-    os.makedirs(REPORT_DIR)
 
 async def send_telegram_msg(message):
     """텔레그램 알림 전송"""
@@ -42,156 +45,105 @@ async def send_telegram_msg(message):
         bot = Bot(token=TELEGRAM_TOKEN)
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"[{BOT_NAME}]\n{message}")
     except Exception as e:
-        print(f"❌ 텔레그램 알림 전송 실패: {e}")
-
-def save_trade_history(trade_data):
-    """매매 기록을 CSV에 저장"""
-    df = pd.DataFrame([trade_data])
-    if not os.path.exists(HISTORY_FILE):
-        df.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
-    else:
-        df.to_csv(HISTORY_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
+        logger.error(f"❌ 텔레그램 알림 실패: {e}")
 
 async def run_bot():
-    print(f"🚀 [{BOT_NAME}] 실전 & 섀도우 봇 동시 가동! (구조 개편 버전)")
+    # DB 초기화
+    init_db()
+    db = SessionLocal()
     
-    balance = INITIAL_BALANCE
-    position = None 
-    shadow_position = None 
+    logger.info("🚀 Bottom-Scanner 가동 시작 (DB 복구 및 로깅 엔진 활성화)")
     
-    TARGET_ROE = TP_PCT * LEVERAGE      
-    STOPLOSS_ROE = -(SL_PCT * LEVERAGE) 
-    
-    await send_telegram_msg(f"✅ 양방향 풀-오토 가동 시작! (레버리지 {LEVERAGE}x)\n📊 로그 위치: {HISTORY_FILE}")
+    # [복구 로직] DB에서 기존 미결제 포지션 확인
+    saved_pos = db.query(ActivePosition).first()
+    position = None
+    if saved_pos:
+        position = {
+            'type': saved_pos.pos_type,
+            'entry_time': saved_pos.entry_time,
+            'entry_price': saved_pos.entry_price,
+            'amount': saved_pos.amount,
+            'margin': saved_pos.margin,
+            'size': saved_pos.amount * saved_pos.entry_price
+        }
+        logger.info(f"♻️ 포지션 복구 성공: {position['type']} (진입가: {position['entry_price']})")
+
+    await send_telegram_msg(f"✅ 시스템 가동! (서버 재시작 복구 모드 활성화)")
 
     while True:
         try:
-            # 1. 최신 데이터 수집 및 지표 계산
+            # 1. 데이터 수집 및 지표 계산
             df_raw = fetch_historical_data(limit=1000)
             df_ind = add_indicators(df_raw)
             
-            # --- 1. 실전(Live) 전략 실행 ---
-            importlib.reload(strategy) 
-            df = strategy.apply_strategy(df_ind.copy(), ema_len=30)
+            # 2. 전략 실행 (핫 스와핑 지원)
+            importlib.reload(strategy)
+            df = strategy.apply_strategy(df_ind.copy())
             last = df.iloc[-1]
-            
-            # --- 2. 섀도우(Shadow) 검증 봇 실행 및 알림 ---
-            shadow_strat_path = "src/strategies/strategy_shadow.py"
-            if os.path.exists(shadow_strat_path):
-                try:
-                    import strategies.strategy_shadow as strategy_shadow
-                    importlib.reload(strategy_shadow)
-                    df_shadow = strategy_shadow.apply_strategy(df_ind.copy(), ema_len=30)
-                    last_shadow = df_shadow.iloc[-1]
-                    
-                    # 섀도우 진입 시 알림
-                    if shadow_position is None and (last_shadow.get('Long_Signal') or last_shadow.get('Short_Signal')):
-                        pos_type = "LONG" if last_shadow['Long_Signal'] else "SHORT"
-                        shadow_position = {'type': pos_type, 'price': last_shadow['close']}
-                        msg = f"👻 [섀도우 진입] {pos_type} 가상 포지션 시작\n💰 가격: {last_shadow['close']:.2f} USDT"
-                        print(msg)
-                        await send_telegram_msg(msg)
-                    
-                    # 섀도우 결과 알림
-                    elif shadow_position is not None:
-                        if shadow_position['type'] == 'LONG':
-                            shadow_roe = (last_shadow['close'] - shadow_position['price']) / shadow_position['price'] * LEVERAGE
-                        else: # SHORT
-                            shadow_roe = (shadow_position['price'] - last_shadow['close']) / shadow_position['price'] * LEVERAGE
-                        
-                        if shadow_roe >= TARGET_ROE:
-                            msg = f"👻 [섀도우 익절] 🎯 타겟 도달!\n📈 ROE: +{shadow_roe*100:.2f}%"
-                            print(msg)
-                            await send_telegram_msg(msg)
-                            shadow_position = None
-                        elif shadow_roe <= STOPLOSS_ROE:
-                            msg = f"👻 [섀도우 손절] ❌ 리스크 관리 종료\n📉 ROE: {shadow_roe*100:.2f}%"
-                            print(msg)
-                            await send_telegram_msg(msg)
-                            shadow_position = None
-                except Exception as e:
-                    print(f"⚠️ 섀도우 봇 에러: {e}")
-
-            current_time = datetime.now(KST)
             current_price = last['close']
-            
-            # --- 3. 실전 포지션 진입/청산 로직 ---
+
+            # 3. 포지션 관리 로직
             if position is None:
                 if last['Long_Signal'] or last['Short_Signal']:
                     pos_type = "LONG" if last['Long_Signal'] else "SHORT"
-                    entry_price = current_price
-                    position_size = balance * LEVERAGE 
-                    entry_fee = position_size * FEE_RATE
-                    balance -= entry_fee 
                     
-                    position = {
-                        'type': pos_type,
-                        'entry_time': current_time, 
-                        'entry_price': entry_price, 
-                        'initial_investment': balance + entry_fee, 
-                        'margin': balance,
-                        'amount': position_size / entry_price,
-                        'size': position_size,
-                        'entry_fee': entry_fee
-                    }
-                    msg = (f"🎯 [{pos_type} 진입!]\n💰 진입가: {entry_price:.2f} USDT\n🔥 총 포지션: {position_size:.2f} USDT")
-                    print(msg)
+                    # 실전 잔고 조회 및 주문 실행 (trader.py 연동)
+                    balance = fetch_real_balance()
+                    amount = (balance * LEVERAGE) / current_price
+                    
+                    # [DB 기록] 포지션 진입 정보 저장
+                    new_pos = ActivePosition(
+                        pos_type=pos_type, 
+                        entry_time=datetime.now(KST),
+                        entry_price=current_price, 
+                        amount=amount, 
+                        margin=balance
+                    )
+                    db.add(new_pos)
+                    db.commit()
+                    
+                    position = {'type': pos_type, 'entry_price': current_price, 'amount': amount, 'entry_time': datetime.now(KST)}
+                    
+                    msg = f"🎯 [{pos_type} 진입] 가격: {current_price:.2f} USDT"
+                    logger.info(msg)
                     await send_telegram_msg(msg)
-                else:
-                    print(f"🔍 [감시 중] {current_time.strftime('%H:%M:%S')} | 가격: {current_price:.2f} | 대기...")
             
             else:
-                pos_type = position['type']
-                current_size = position['amount'] * current_price
-                exit_fee = current_size * FEE_RATE
-                
-                if pos_type == "LONG":
-                    gross_pnl = current_size - position['size']
+                # 수익률(ROE) 계산 및 청산 감시
+                if position['type'] == "LONG":
+                    roe = (current_price - position['entry_price']) / position['entry_price'] * LEVERAGE
                 else:
-                    gross_pnl = position['size'] - current_size 
-                
-                net_trade_pnl = gross_pnl - position['entry_fee'] - exit_fee
-                roe_pct = net_trade_pnl / position['initial_investment']
-                
-                close_reason = None
-                if roe_pct <= -1.0:
-                    balance = 0
-                    close_reason = "강제청산(LIQ)"
-                elif roe_pct >= TARGET_ROE:
-                    balance = position['margin'] + gross_pnl - exit_fee
-                    close_reason = "익절(TP)"
-                elif roe_pct <= STOPLOSS_ROE:
-                    balance = position['margin'] + gross_pnl - exit_fee
-                    close_reason = "손절(SL)"
+                    roe = (position['entry_price'] - current_price) / position['entry_price'] * LEVERAGE
 
-                if close_reason:
-                    msg = f"🏁 [{close_reason} 완료] {pos_type} 종료\n💵 순손익: {net_trade_pnl:.2f} USDT (ROE: {roe_pct*100:.2f}%)"
-                    print(msg)
-                    await send_telegram_msg(msg)
+                if roe >= (TP_PCT * LEVERAGE) or roe <= -(SL_PCT * LEVERAGE):
+                    reason = "익절(TP)" if roe > 0 else "손절(SL)"
                     
-                    # 매매 일지 기록
-                    save_trade_history({
-                        "진입시간": position['entry_time'].strftime('%Y-%m-%d %H:%M:%S'),
-                        "청산시간": current_time.strftime('%Y-%m-%d %H:%M:%S'),
-                        "포지션": pos_type,
-                        "진입가": round(position['entry_price'], 2),
-                        "청산가": round(current_price, 2),
-                        "순손익(USDT)": round(net_trade_pnl, 2),
-                        "최종ROE(%)": round(roe_pct * 100, 2),
-                        "종료사유": close_reason
-                    })
+                    # [DB 기록] 매매 이력 저장 및 현재 포지션 삭제
+                    history = TradeHistory(
+                        entry_time=position['entry_time'], 
+                        exit_time=datetime.now(KST),
+                        pos_type=position['type'], 
+                        entry_price=position['entry_price'],
+                        exit_price=current_price, 
+                        roe_pct=roe*100, 
+                        exit_reason=reason
+                    )
+                    db.add(history)
+                    db.query(ActivePosition).delete()
+                    db.commit()
+                    
+                    msg = f"🏁 [{reason} 완료] 최종 ROE: {roe*100:.2f}%"
+                    logger.info(msg)
+                    await send_telegram_msg(msg)
                     position = None
-                    if close_reason == "강제청산(LIQ)": break
 
-            # 3분 주기 슬립
+            # 3분 주기 동기화
             now = datetime.now(KST)
             next_run = now.replace(second=0, microsecond=0) + timedelta(minutes=3 - (now.minute % 3))
-            sleep_seconds = (next_run - now).total_seconds()
-            if sleep_seconds > 0:
-                await asyncio.sleep(sleep_seconds)
+            await asyncio.sleep((next_run - now).total_seconds())
             
         except Exception as e:
-            print(f"⚠️ 봇 실행 중 에러 발생: {e}")
+            logger.error(f"⚠️ 시스템 루프 에러: {e}")
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
