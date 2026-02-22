@@ -1,0 +1,111 @@
+import os
+import traceback
+import importlib
+import pandas as pd
+import vectorbt as vbt
+from openai import OpenAI
+from dotenv import load_dotenv
+from fetcher import fetch_historical_data
+from indicators import add_indicators
+
+load_dotenv()
+
+# 🌟 알려주신 Upstage API 세팅 적용 완료
+client = OpenAI(
+    api_key=os.getenv('UPSTAGE_API_KEY'),
+    base_url="https://api.upstage.ai/v1" 
+)
+
+def test_code_syntax():
+    """AI가 짠 코드가 에러 없이 돌아가는지 가상 테스트 (자가 검증)"""
+    try:
+        df = fetch_historical_data(limit=100)
+        df = add_indicators(df)
+        import strategy_candidate
+        importlib.reload(strategy_candidate)
+        df = strategy_candidate.apply_strategy(df)
+        return True, "Success"
+    except Exception as e:
+        return False, traceback.format_exc()
+
+def generate_and_correct_strategy():
+    """AI를 이용해 코드를 개선하고 에러 발생 시 스스로 수정"""
+    with open("src/strategy.py", "r", encoding="utf-8") as f:
+        current_code = f.read()
+        
+    system_prompt = "너는 최고 수준의 가상화폐 퀀트 트레이더야. 답변은 반드시 파이썬 코드 블록(```python ... ```)만 출력해."
+    
+    user_prompt = f"""
+    아래는 현재 내 매매 전략 코드야 (`strategy.py`).
+    ```python
+    {current_code}
+    ```
+    현재 봇은 '역추세 매매' 기반이라 횡보장에서는 좋지만 강한 상승/폭락장에서는 스탑로스가 터져.
+    내 데이터프레임에는 `df['ADX']` (추세 강도)와 `df['EMA_200']` (장기 추세선) 컬럼이 이미 계산되어 있어.
+    
+    이 변수들을 조합해서 리스크를 관리하는 새로운 `apply_strategy(df, ema_len=30)` 함수 전체 코드를 짜줘.
+    - 강한 추세장(예: ADX > 25)이면서 상승장(close > EMA_200)일 때는 역추세 Short 진입을 차단해.
+    - 강한 추세장이면서 하락장(close < EMA_200)일 때는 역추세 Long 진입을 차단해.
+    - 기존의 VAL, VAH, 다이버전스(Bull_Div, Bear_Div) 로직은 그대로 유지하면서 이 장세 필터 조건만 영리하게 추가해.
+    """
+    
+    for attempt in range(1, 4):
+        print(f"🤖 AI 전략 진화 시도 ({attempt}/3)...")
+        
+        # 🌟 모델명 solar-pro3 적용 및 stream=False 처리
+        response = client.chat.completions.create(
+            model="solar-pro3",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            stream=False,
+            temperature=0.2
+        )
+        
+        new_code = response.choices[0].message.content
+        if "```python" in new_code:
+            new_code_clean = new_code.split("```python")[1].split("```")[0].strip()
+        else:
+            new_code_clean = new_code.replace("```", "").strip()
+        
+        with open("src/strategy_candidate.py", "w", encoding="utf-8") as f:
+            f.write(new_code_clean)
+            
+        is_valid, error_msg = test_code_syntax()
+        if is_valid:
+            print("✅ AI 코드 문법 테스트 통과! (에러 없음)")
+            return new_code_clean
+        else:
+            print(f"⚠️ 문법 에러 발생. AI가 스스로 재수정을 시도합니다...\n{error_msg[:100]}")
+            user_prompt = f"네가 짜준 코드에 에러가 났어. 고쳐서 다시 전체 코드를 짜줘:\n{error_msg}"
+            
+    return None
+
+def run_backtest_and_chart():
+    """완성된 후보 코드로 백테스트를 돌리고 차트 이미지를 저장"""
+    print("📊 5000 캔들 백테스트 및 차트 생성 중...")
+    df = fetch_historical_data(limit=5000)
+    df = add_indicators(df)
+    
+    import strategy_candidate
+    importlib.reload(strategy_candidate)
+    df = strategy_candidate.apply_strategy(df)
+    
+    pf = vbt.Portfolio.from_signals(
+        df['close'], entries=df.get('Long_Signal', False), short_entries=df.get('Short_Signal', False),
+        tp_stop=0.02, sl_stop=0.015, fees=0.0005, freq='3m'
+    )
+    
+    fig = pf.plot()
+    fig.write_image("report.png", width=1200, height=800) # 🌟 차트 이미지 저장
+    return pf.total_return() * 100, pf.trades.count()
+
+if __name__ == "__main__":
+    if generate_and_correct_strategy():
+        return_pct, trade_count = run_backtest_and_chart()
+        print(f"🎉 진화 완료! 예상 수익률: {return_pct:.2f}% (거래 횟수: {trade_count})")
+        
+        # 텔레그램 봇이 읽을 수 있게 성적표 텍스트 저장
+        with open("report_stats.txt", "w") as f:
+            f.write(f"{return_pct:.2f},{trade_count}")

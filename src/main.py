@@ -1,29 +1,25 @@
 import os
 import asyncio
 import pandas as pd
+import importlib
 from datetime import datetime, timedelta, timezone
 from telegram import Bot
 from dotenv import load_dotenv
 from fetcher import fetch_historical_data
 from indicators import add_indicators
-from strategy import apply_strategy
 
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 BOT_NAME = "Bottom-Scanner" 
-
-# 🌟 한국 시간(KST) 세팅
 KST = timezone(timedelta(hours=9))
 
-# --- 가상 투자(모의투자) 설정 ---
 INITIAL_BALANCE = 1300.0  
 LEVERAGE = 10             
 TP_PCT = 0.02             
 SL_PCT = 0.015             
-FEE_RATE = 0.0005         # 💸 바이낸스 선물 시장가 수수료 0.05%
-# -----------------------------
+FEE_RATE = 0.0005         
 
 DB_DIR = "db"
 HISTORY_FILE = f"{DB_DIR}/trade_history.csv"
@@ -34,8 +30,7 @@ if not os.path.exists(DB_DIR):
 async def send_telegram_msg(message):
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
-        full_msg = f"[{BOT_NAME}]\n{message}"
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=full_msg)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"[{BOT_NAME}]\n{message}")
     except Exception as e:
         print(f"❌ 텔레그램 알림 전송 실패: {e}")
 
@@ -45,161 +40,115 @@ def save_trade_history(trade_data):
         df.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
     else:
         df.to_csv(HISTORY_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
-    print(f"💾 매매 일지가 엑셀(CSV) 파일에 안전하게 기록되었습니다.")
 
 async def run_bot():
-    print(f"🚀 [{BOT_NAME}] 양방향(LONG/SHORT) 모의투자 봇 가동!")
+    print(f"🚀 [{BOT_NAME}] 실전 & 섀도우 봇 동시 가동!")
     
     balance = INITIAL_BALANCE
     position = None 
+    shadow_position = None # 🌟 섀도우 포지션
     
     TARGET_ROE = TP_PCT * LEVERAGE      
     STOPLOSS_ROE = -(SL_PCT * LEVERAGE) 
     
-    await send_telegram_msg(
-        f"✅ 양방향(LONG/SHORT) 풀-오토 가동 시작!\n"
-        f"⚙️ 레버리지: {LEVERAGE}x\n"
-        f"💰 시작 잔고: {balance:.2f} USDT"
-    )
+    await send_telegram_msg(f"✅ 양방향 풀-오토 가동 시작! (레버리지 {LEVERAGE}x)")
 
     while True:
         try:
-            df = fetch_historical_data(limit=1000)
-            df = add_indicators(df)
-            df = apply_strategy(df, ema_len=30)
+            df_raw = fetch_historical_data(limit=1000)
+            df_ind = add_indicators(df_raw)
             
+            # --- 1. 실전(Live) 전략 실행 ---
+            # 🌟 매번 모듈을 리로드하여, 결재가 나면 봇 재부팅 없이 다음 캔들부터 바로 새 코드 적용
+            import strategy
+            importlib.reload(strategy)
+            df = strategy.apply_strategy(df_ind.copy(), ema_len=30)
             last = df.iloc[-1]
-            current_time = datetime.now(KST) # 🌟 한국 시간(KST) 적용
+            
+            # --- 2. 섀도우(Shadow) 검증 봇 실행 ---
+            if os.path.exists("src/strategy_shadow.py"):
+                try:
+                    import strategy_shadow
+                    importlib.reload(strategy_shadow)
+                    df_shadow = strategy_shadow.apply_strategy(df_ind.copy(), ema_len=30)
+                    last_shadow = df_shadow.iloc[-1]
+                    
+                    if shadow_position is None and (last_shadow.get('Long_Signal') or last_shadow.get('Short_Signal')):
+                        pos_type = "LONG" if last_shadow['Long_Signal'] else "SHORT"
+                        shadow_position = {'type': pos_type, 'price': last_shadow['close']}
+                        print(f"👻 [섀도우 검증] {pos_type} 가상 진입 포착! (가격: {last_shadow['close']})")
+                    elif shadow_position is not None:
+                        roe_diff = abs((last_shadow['close'] - shadow_position['price']) / shadow_position['price'] * LEVERAGE)
+                        if roe_diff >= TP_PCT or roe_diff >= SL_PCT:
+                            print(f"👻 [섀도우 검증] 가상 포지션 종료 완료.")
+                            shadow_position = None
+                except Exception as e:
+                    pass # 섀도우 에러는 메인 봇에 영향을 주지 않게 무시
+
+            current_time = datetime.now(KST)
             current_price = last['close']
             
-            # ==========================================
-            # 2. 포지션 진입 감시 (롱 or 숏)
-            # ==========================================
+            # --- 3. 실전 포지션 진입/청산 로직 ---
             if position is None:
-                # 롱 시그널이 떴는지, 숏 시그널이 떴는지 확인
                 if last['Long_Signal'] or last['Short_Signal']:
                     pos_type = "LONG" if last['Long_Signal'] else "SHORT"
                     entry_price = current_price
-                    
                     position_size = balance * LEVERAGE 
                     entry_fee = position_size * FEE_RATE
                     balance -= entry_fee 
                     
-                    margin = balance
-                    amount = position_size / entry_price 
-                    
                     position = {
-                        'type': pos_type, # 🌟 롱/숏 방향 기억
+                        'type': pos_type,
                         'entry_time': current_time, 
                         'entry_price': entry_price, 
-                        'initial_investment': margin + entry_fee, 
-                        'margin': margin,
-                        'amount': amount,
+                        'initial_investment': balance + entry_fee, 
+                        'margin': balance,
+                        'amount': position_size / entry_price,
                         'size': position_size,
                         'entry_fee': entry_fee
                     }
-                    
-                    # 롱/숏 이모지 다르게 표시
-                    icon = "📈" if pos_type == "LONG" else "📉"
-                    msg = (f"🎯 [가상 {pos_type} 진입! ({LEVERAGE}x)]\n"
-                           f"⏰ 시간: {current_time.strftime('%H:%M:%S')}\n"
-                           f"💰 진입가: {entry_price:.2f} USDT\n"
-                           f"{icon} 방향: {pos_type}\n"
-                           f"🔥 총 포지션: {position_size:.2f} USDT\n"
-                           f"💸 낸 수수료: {entry_fee:.2f} USDT")
+                    msg = (f"🎯 [{pos_type} 진입!]\n💰 진입가: {entry_price:.2f} USDT\n🔥 총 포지션: {position_size:.2f} USDT")
                     print(msg)
                     await send_telegram_msg(msg)
                 else:
-                    # 🌟 지훈님이 원래 쓰셨던 문구 그대로 복구
-                    print(f"🔍 [감시 중] {current_time.strftime('%H:%M:%S')} | 가격: {current_price:.2f} | 진입 대기...")
+                    print(f"🔍 [감시 중] {current_time.strftime('%H:%M:%S')} | 가격: {current_price:.2f} | 대기...")
             
-            # ==========================================
-            # 3. 포지션 청산 감시 (수수료 및 방향성 반영)
-            # ==========================================
             else:
                 pos_type = position['type']
-                entry_time = position['entry_time']
-                entry_price = position['entry_price']
-                margin = position['margin']
-                initial_investment = position['initial_investment']
-                amount = position['amount']
-                entry_fee = position['entry_fee']
-                
-                current_size = amount * current_price
+                current_size = position['amount'] * current_price
                 exit_fee = current_size * FEE_RATE
                 
-                # 🌟 롱과 숏의 수익 계산법 분리
                 if pos_type == "LONG":
-                    gross_pnl = current_size - position['size'] # 올랐을 때 수익
-                else: # SHORT
-                    gross_pnl = position['size'] - current_size # 떨어졌을 때 수익
+                    gross_pnl = current_size - position['size']
+                else:
+                    gross_pnl = position['size'] - current_size 
                 
-                net_trade_pnl = gross_pnl - entry_fee - exit_fee
-                roe_pct = net_trade_pnl / initial_investment
-                
-                print(f"🔒 [{pos_type} 보유] 현재가: {current_price:.2f} | 찐ROE: {roe_pct*100:.2f}% | 순손익: {net_trade_pnl:.2f}")
+                net_trade_pnl = gross_pnl - position['entry_fee'] - exit_fee
+                roe_pct = net_trade_pnl / position['initial_investment']
                 
                 close_reason = None
-
                 if roe_pct <= -1.0:
                     balance = 0
                     close_reason = "강제청산(LIQ)"
-                    msg = f"💀 [강제 청산] 수수료 포함 증거금이 모두 소진되었습니다."
-                    print(msg)
-                    await send_telegram_msg(msg)
-                    
                 elif roe_pct >= TARGET_ROE:
-                    balance = margin + gross_pnl - exit_fee
+                    balance = position['margin'] + gross_pnl - exit_fee
                     close_reason = "익절(TP)"
-                    msg = (f"✅ [{pos_type} 목표가 도달! 익절]\n"
-                           f"💰 청산가: {current_price:.2f}\n"
-                           f"💸 낸 수수료 총합: {entry_fee + exit_fee:.2f} USDT\n"
-                           f"💵 순수익: +{net_trade_pnl:.2f} USDT (찐 수익률: +{roe_pct*100:.2f}%)\n"
-                           f"💳 현재 잔고: {balance:.2f} USDT")
-                    print(msg)
-                    await send_telegram_msg(msg)
-                    
                 elif roe_pct <= STOPLOSS_ROE:
-                    balance = margin + gross_pnl - exit_fee
+                    balance = position['margin'] + gross_pnl - exit_fee
                     close_reason = "손절(SL)"
-                    msg = (f"❌ [{pos_type} 손절가 이탈! 손절]\n"
-                           f"💰 청산가: {current_price:.2f}\n"
-                           f"💸 낸 수수료 총합: {entry_fee + exit_fee:.2f} USDT\n"
-                           f"💵 순손실: {net_trade_pnl:.2f} USDT (찐 수익률: {roe_pct*100:.2f}%)\n"
-                           f"💳 현재 잔고: {balance:.2f} USDT")
-                    print(msg)
-                    await send_telegram_msg(msg)
 
                 if close_reason:
-                    trade_record = {
-                        "진입시간": entry_time.strftime('%Y-%m-%d %H:%M:%S'),
-                        "청산시간": current_time.strftime('%Y-%m-%d %H:%M:%S'),
-                        "포지션": pos_type, # 🌟 엑셀에 LONG/SHORT 기록
-                        "레버리지": LEVERAGE,
-                        "진입가": round(entry_price, 2),
-                        "청산가": round(current_price, 2),
-                        "초기원금(USDT)": round(initial_investment, 2),
-                        "총수수료(USDT)": round(entry_fee + exit_fee, 2),
-                        "순손익(USDT)": round(net_trade_pnl, 2) if close_reason != "강제청산(LIQ)" else -round(initial_investment, 2),
-                        "최종ROE(%)": round(roe_pct * 100, 2) if close_reason != "강제청산(LIQ)" else -100.0,
-                        "종료사유": close_reason,
-                        "최종잔고(USDT)": round(balance, 2)
-                    }
-                    save_trade_history(trade_record)
+                    msg = f"🏁 [{close_reason} 완료] {pos_type} 포지션 종료\n💵 순손익: {net_trade_pnl:.2f} USDT (ROE: {roe_pct*100:.2f}%)"
+                    print(msg)
+                    await send_telegram_msg(msg)
                     position = None
-                    
-                    if close_reason == "강제청산(LIQ)":
-                        break 
+                    if close_reason == "강제청산(LIQ)": break
 
-            now = datetime.now(KST) # 🌟 여기도 KST 적용
+            now = datetime.now(KST)
             next_run = now.replace(second=0, microsecond=0) + timedelta(minutes=3 - (now.minute % 3))
             sleep_seconds = (next_run - now).total_seconds()
-            
-            # 🌟 지연 시간 방지(Drift 계산)는 지훈님이 짜신 게 완벽합니다. 프린트문만 추가했습니다!
             if sleep_seconds > 0:
-                print(f"⏳ 3분봉 캔들 정각까지 {int(sleep_seconds)}초 대기 중... (다음 실행: {next_run.strftime('%H:%M:%S')})")
-            
-            await asyncio.sleep(sleep_seconds)
+                await asyncio.sleep(sleep_seconds)
             
         except Exception as e:
             print(f"⚠️ 봇 실행 중 에러 발생: {e}")

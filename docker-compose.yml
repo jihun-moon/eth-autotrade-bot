@@ -1,9 +1,23 @@
-# version: '3.8'
+version: '3.8'
 services:
   eth-bot:
     build: .
     restart: always
+    command: python src/main.py
     volumes:
       - ./db:/app/db
+      - ./src:/app/src
+      - .:/app
+    env_file:
+      - .env
+
+  admin-bot:
+    build: .
+    restart: always
+    command: python src/admin_bot.py
+    volumes:
+      - ./db:/app/db
+      - ./src:/app/src
+      - .:/app
     env_file:
       - .env

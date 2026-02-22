@@ -7,7 +7,17 @@ def add_indicators(df):
     df['RSI'] = ta.rsi(df['close'], length=14)
     df['EMA_50'] = ta.ema(df['close'], length=50)
     
-    # 2. 볼륨 프로파일 계산 (최근 480캔들 기준) - iterrows 제거로 속도 최적화
+    # 🔥 [추가됨] AI가 장세(Regime)를 판독할 수 있도록 지표 추가
+    df['EMA_200'] = ta.ema(df['close'], length=200)
+    
+    # ADX 계산 (추세 강도)
+    adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
+    if adx_df is not None:
+        df['ADX'] = adx_df['ADX_14'] 
+    else:
+        df['ADX'] = 0
+
+    # 2. 볼륨 프로파일 계산 (최근 480캔들 기준)
     lookback = 480
     if len(df) >= lookback:
         window = df.iloc[-lookback:]
@@ -16,9 +26,8 @@ def add_indicators(df):
         vols, bin_edges = np.histogram(mid_prices, bins=50, weights=window['volume'])
         
         poc_idx = np.argmax(vols)
-        df['POC'] = (bin_edges[poc_idx] + bin_edges[poc_idx+1]) / 2  # 회색선 (Point of Control)
+        df['POC'] = (bin_edges[poc_idx] + bin_edges[poc_idx+1]) / 2  
         
-        # 가치 영역(VA 70%) 계산
         va_target = vols.sum() * 0.7
         current_v = vols[poc_idx]
         l, r = poc_idx, poc_idx
@@ -31,8 +40,8 @@ def add_indicators(df):
             else:
                 current_v += rv
                 r += 1
-        df['VAL'] = bin_edges[l]      # 파란영역 하단 (Value Area Low)
-        df['VAH'] = bin_edges[r+1]    # 파란영역 상단 (Value Area High)
+        df['VAL'] = bin_edges[l]      
+        df['VAH'] = bin_edges[r+1]    
     
     # 3. 스퀴즈 모멘텀
     bb = ta.bbands(df['close'], length=20, std=2.0)

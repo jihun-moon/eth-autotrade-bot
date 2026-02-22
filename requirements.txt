@@ -8,3 +8,5 @@ kaleido
 # 삭제된 깃허브 대신 소스포지(SourceForge) 미러를 통해 0.3.14b 버전을 강제 설치합니다.
 https://sourceforge.net/projects/pandas-ta.mirror/files/0.3.14/PandasTA-v0.3.14b%20source%20code.zip/download
 python-telegram-bot
+openai==1.52.2
+plotly
