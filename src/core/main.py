@@ -6,13 +6,14 @@ from datetime import datetime, timedelta, timezone
 from telegram import Bot
 from dotenv import load_dotenv
 
+# 경로 설정 및 유틸리티 임포트
 from utils.fetcher import fetch_historical_data
 from utils.indicators import add_indicators
 import strategies.strategy as strategy 
 from core.db_manager import init_db, SessionLocal, ActivePosition, TradeHistory
 from core.trader import fetch_real_balance, execute_order 
 
-# 로깅 설정
+# 로깅 설정 (안정화 버전 + 파일 기록)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
                     handlers=[logging.FileHandler("data/reports/bot.log"), logging.StreamHandler()])
 logger = logging.getLogger("BottomScanner")
@@ -22,7 +23,7 @@ TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_TOKEN'), os.getenv('TELEG
 KST, LEVERAGE = timezone(timedelta(hours=9)), 10
 
 async def send_telegram_msg(message):
-    """텔레그램 메시지 전송 (알림 기능 강화)"""
+    """텔레그램 메시지 전송"""
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"[Bottom-Scanner]\n{message}")
@@ -39,24 +40,27 @@ async def heartbeat_loop():
             await asyncio.sleep(60)
 
 async def run_bot():
-    """실전 매매 메인 루프 (안정화 버전의 정밀 타이밍 적용)"""
+    """실전 매매 메인 루프"""
     init_db(); db = SessionLocal()
     asyncio.create_task(heartbeat_loop())
     
-    # 1. 기존 포지션 복구 (DB 기반)
+    # 🌟 1. 기존 포지션 복구 (DB 기반 - 깃허브 기능)
     saved_pos = db.query(ActivePosition).first()
     position = None
     if saved_pos:
-        position = {'id': saved_pos.id, 'type': saved_pos.pos_type, 'entry_price': saved_pos.entry_price,
-                    'amount': saved_pos.amount, 'tp': saved_pos.tp_pct, 'sl': saved_pos.sl_pct, 'entry_time': saved_pos.entry_time}
+        position = {
+            'id': saved_pos.id, 'type': saved_pos.pos_type, 'entry_price': saved_pos.entry_price,
+            'amount': saved_pos.amount, 'tp': saved_pos.tp_pct, 'sl': saved_pos.sl_pct, 
+            'entry_time': saved_pos.entry_time
+        }
         logger.info(f"♻️ 포지션 복구 완료: {position['type']} (진입가: {position['entry_price']})")
 
     shadow_position = None
-    await send_telegram_msg("✅ Bottom-Scanner 시스템 가동 시작! (안정화 루프 적용)")
+    await send_telegram_msg("✅ Bottom-Scanner 시스템 가동 시작!")
 
     while True:
         try:
-            # 2. 데이터 수집 및 지표 계산 (Volume Profile + Squeeze Momentum 포함)
+            # 🌟 2. 데이터 수집 및 지표 계산 (안정화 버전 로직)
             raw_data = fetch_historical_data(limit=2000)
             if raw_data is None or len(raw_data) < 500:
                 logger.warning("⚠️ 데이터 부족으로 대기 중...")
@@ -73,7 +77,7 @@ async def run_bot():
             last = df.iloc[-1]
             current_price = last['close']
 
-            # ── 3. 섀도우 모드 감시 (AI 후보 전략 테스트) ──
+            # ── 3. 섀도우 모드 감시 (AI 후보 전략 테스트 - 깃허브 기능) ──
             shadow_path = "src/strategies/strategy_shadow.py"
             if os.path.exists(shadow_path):
                 try:
@@ -102,7 +106,7 @@ async def run_bot():
                 except Exception as shadow_e:
                     logger.error(f"⚠️ 섀도우 모드 에러: {shadow_e}")
 
-            # ── 4. 실전 포지션 관리 (10배 레버리지) ──
+            # ── 4. 실전 포지션 관리 (안정화 버전 계산식 + DB 연동) ──
             if position is None:
                 if last.get('Long_Signal') or last.get('Short_Signal'):
                     pos_type = "LONG" if last['Long_Signal'] else "SHORT"
@@ -117,15 +121,17 @@ async def run_bot():
                                                  amount=amount, margin=balance, tp_pct=d_params['tp'], sl_pct=d_params['sl'])
                         db.add(new_pos); db.commit(); db.refresh(new_pos)
                         
-                        position = {'id': new_pos.id, 'type': pos_type, 'entry_price': current_price, 'amount': amount, 
-                                    'tp': d_params['tp'], 'sl': d_params['sl'], 'entry_time': datetime.now(KST)}
+                        position = {
+                            'id': new_pos.id, 'type': pos_type, 'entry_price': current_price, 'amount': amount, 
+                            'tp': d_params['tp'], 'sl': d_params['sl'], 'entry_time': datetime.now(KST)
+                        }
                         await send_telegram_msg(f"🎯 [실전 진입] {pos_type}\n💰 진입가: {current_price}\n📈 목표: {d_params['tp']*100:.1f}%")
+                else:
+                    logger.info(f"🔍 [감시 중] 가격: {current_price:.2f} | 진입 대기...")
             else:
-                # 수익률 계산 (레버리지 반영)
                 roe = ((current_price - position['entry_price']) / position['entry_price'] * LEVERAGE 
                        if position['type']=="LONG" else (position['entry_price'] - current_price) / position['entry_price'] * LEVERAGE)
                 
-                # 청산 조건 확인 (익절/손절)
                 if roe >= (position['tp'] * LEVERAGE) or roe <= -(position['sl'] * LEVERAGE):
                     exit_res = await execute_order('EXIT', position['amount'])
                     
@@ -137,14 +143,13 @@ async def run_bot():
                         await send_telegram_msg(f"🏁 [실전 청산] {reason}\n📊 최종 ROE: {roe*100:.2f}%")
                         position = None
 
-            # 🌟 5. 정밀 대기 로직 (예전 안정화 버전의 핵심)
-            # 3분봉 마감 직후인 05초에 실행되도록 맞춤
+            # 🌟 5. 정밀 대기 로직 (안정화 버전의 핵심 - Drift 방지)
             now = datetime.now(KST)
             next_run = now.replace(second=5, microsecond=0) + timedelta(minutes=3 - (now.minute % 3))
             wait_sec = (next_run - now).total_seconds()
             if wait_sec < 0: wait_sec += 180 
             
-            logger.info(f"⏳ 분석 완료. 다음 주기까지 {wait_sec:.1f}초 정밀 대기...")
+            logger.info(f"⏳ 다음 분석까지 {wait_sec:.1f}초 정밀 대기...")
             await asyncio.sleep(max(wait_sec, 10))
             
         except Exception as e:
