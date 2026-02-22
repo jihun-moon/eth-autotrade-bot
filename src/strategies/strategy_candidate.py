@@ -4,145 +4,97 @@ import pandas_ta as ta
 
 def apply_strategy(df, ema_len=30, tp=0.02, sl=0.015):
     """
-    다이버전스 Reversal + 추세 방어 전략
-    - Long: 과거 10캔들 내 VAL 이하 가격 존재 + 현재 캔들 VAL 상향 돌파
-    - Short: 과거 10캔들 내 VAH 이상 가격 존재 + 현재 캔들 VAH 하향 돌파
-    - CVD 골든/데드크로스 필수 필터
-    - ADX > 25 & EMA_200와 2% 이상 괴리 시 진입 차단
-    - 최소 1회 거래 발생 보장 (fallback 로직)
+    개선된 가상화폐 퀀트 매매 전략.
+    - 롱: 이전 캔들에서 VAL 아래에 있다가 현재 캔들에서 VAL 위로 복귀하고,
+          CVD 상승, EMA_Short > EMA_200, ADX <= 25.
+    - 숏: 이전 캔들에서 VAH 위에 있다가 현재 캔들에서 VAH 아래로 복귀하고,
+          CVD 하락, EMA_Short < EMA_200, ADX <= 25.
     """
-    # -------------------------------------------------
-    # 1) 필수 컬럼 확보
-    # -------------------------------------------------
-    required = ['close', 'low', 'high', 'RSI', 'VAL', 'VAH',
-                'CVD', 'CVD_Signal', 'ADX', 'EMA_200']
-    for col in required:
-        if col not in df.columns:
-            if col == 'RSI':
-                df['RSI'] = ta.rsi(df['close'], length=14)
-            elif col == 'EMA_200':
-                df['EMA_200'] = ta.ema(df['close'], length=200)
-            elif col == 'ADX':
-                df['ADX'] = ta.adx(df['high'], df['low'], df['close'])['ADX_14']
-            elif col == 'CVD':
-                # CVD = Up Volume - Down Volume
-                df['CVD'] = (df['close'] > df['close'].shift(1)).astype(int) * df['volume'] \
-                           - (df['close'] < df['close'].shift(1)).astype(int) * df['volume']
-            elif col == 'CVD_Signal':
-                df['CVD_Signal'] = ta.ema(df['CVD'], length=10)
-            else:
-                # VAL, VAH 등 사용자 정의 컬럼은 외부에서 제공된다고 가정
-                pass
+    # 1️⃣ 필수 컬럼이 없을 경우 계산 (이미 존재하면 재계산 금지)
+    if 'RSI' not in df.columns:
+        df['RSI'] = ta.rsi(df['close'], length=14)
+    if 'EMA_200' not in df.columns:
+        df['EMA_200'] = ta.ema(df['close'], length=200)
+    if 'ADX' not in df.columns:
+        df['ADX'] = ta.adx(df['high'], df['low'], df['close'])['ADX_14']
 
-    # -------------------------------------------------
-    # 2) 다이버전스 정의
-    # -------------------------------------------------
-    df['Bull_Div'] = (df['low'] == df['low'].rolling(3).min()) & (df['RSI'] > df['RSI'].shift(1))
-    df['Bear_Div'] = (df['high'] == df['high'].rolling(3).max()) & (df['RSI'] < df['RSI'].shift(1))
+    # 2️⃣ EMA_Short (전략 전용) 계산
+    if 'EMA_Short' not in df.columns:
+        df['EMA_Short'] = ta.ema(df['close'], length=ema_len)
 
-    # -------------------------------------------------
-    # 3) 기본 진입 로직 (기존 방식)
-    # -------------------------------------------------
-    df['Below_Structure'] = df['close'] < df['VAL']
-    df['Above_Structure'] = df['close'] > df['VAH']
+    # 3️⃣ Lookback 레벨 계산 (기존 로직 유지)
+    df['Low_Lookback'] = df['low'].rolling(5).min()
+    df['High_Lookback'] = df['high'].rolling(5).max()
 
-    base_long = (
-        df['Below_Structure'] &
+    # 4️⃣ Bull / Bear Divergence (불리언 마스크 안전화)
+    df['Bull_Div'] = (df['low'] <= df['Low_Lookback']) & (df['RSI'] > df['RSI'].shift(1)).astype(bool)
+    df['Bear_Div'] = (df['high'] >= df['High_Lookback']) & (df['RSI'] < df['RSI'].shift(1)).astype(bool)
+
+    # 5️⃣ 구조 위치 마스크
+    df['Below_Structure'] = df['close'] < (df['VAL'] * 1.001)
+    df['Above_Structure'] = df['close'] > (df['VAH'] * 0.999)
+
+    # 6️⃣ 롱 시그널 (가격 복귀 + CVD 상승 + EMA 방향 + ADX)
+    long_cond = (
+        (df['close'].shift(1) < df['VAL'].shift(1)) &
+        (df['close'] >= df['VAL']) &
         df['Bull_Div'] &
-        (df['close'] > ta.ema(df['close'], length=ema_len))
+        (df['CVD'] > df['CVD'].shift(1)) &
+        (df['EMA_Short'] > df['EMA_200']) &
+        (df['ADX'] <= 25)
     )
-    base_short = (
-        df['Above_Structure'] &
+    df['Long_Signal'] = long_cond
+
+    # 7️⃣ 숏 시그널 (가격 복귀 + CVD 하락 + EMA 방향 + ADX)
+    short_cond = (
+        (df['close'].shift(1) > df['VAH'].shift(1)) &
+        (df['close'] <= df['VAH']) &
         df['Bear_Div'] &
-        (df['close'] < ta.ema(df['close'], length=ema_len))
+        (df['CVD'] < df['CVD'].shift(1)) &
+        (df['EMA_Short'] < df['EMA_200']) &
+        (df['ADX'] <= 25)
+    )
+    df['Short_Signal'] = short_cond
+
+    # 8️⃣ 전체 시그널 (Long=+1, Short=-1, No=0)
+    df['Signal'] = pd.Series(
+        np.where(df['Long_Signal'], 1,
+                np.where(df['Short_Signal'], -1, 0)),
+        index=df.index
     )
 
-    # -------------------------------------------------
-    # 4) 흐름 기반 진입 로직 (10캔들 내 VAL/VAH 돌파)
-    # -------------------------------------------------
-    # 과거 10캔들 내 VAL 이하 존재 여부
-    df['Price_Below_VAL_10'] = (df['close'] < df['VAL']).rolling(10).apply(
-        lambda x: x.any(), raw=False
-    )
-    # 현재 캔들 VAL 상향 돌파
-    df['Price_Above_VAL'] = df['close'] > df['VAL']
-
-    # 과거 10캔들 내 VAH 이상 존재 여부
-    df['Price_Above_VAH_10'] = (df['close'] > df['VAH']).rolling(10).apply(
-        lambda x: x.any(), raw=False
-    )
-    # 현재 캔들 VAH 하향 돌파
-    df['Price_Below_VAH'] = df['close'] < df['VAH']
-
-    long_flow = df['Price_Below_VAL_10'] & df['Price_Above_VAL']
-    short_flow = df['Price_Above_VAH_10'] & df['Price_Below_VAH']
-
-    # -------------------------------------------------
-    # 5) CVD 골든/데드크로스 필터
-    # -------------------------------------------------
-    long_crossover = (
-        (df['CVD'] > df['CVD_Signal']) &
-        (df['CVD'].shift(1) <= df['CVD_Signal'].shift(1))
-    )
-    short_crossunder = (
-        (df['CVD'] < df['CVD_Signal']) &
-        (df['CVD'].shift(1) >= df['CVD_Signal'].shift(1))
+    # 9️⃣ 포지션 컬럼 생성 (NaN → NaN, 0 → NaN, ffill, shift, fillna)
+    df['Position'] = (
+        df['Signal'].replace(0, np.nan).ffill()
+        .shift(1).fillna(0)
     )
 
-    # -------------------------------------------------
-    # 6) 추세 방어 로직
-    # -------------------------------------------------
-    # EMA_200와 2% 이상 괴리 여부
-    df['EMA_200_2pct'] = (np.abs(df['close'] - df['EMA_200']) / df['EMA_200']) > 0.02
-
-    # ADX > 25 & 괴리 > 2%이면 진입 차단
-    trend_defense_long = (df['ADX'] <= 25) | (df['EMA_200_2pct'] <= 0.02)
-    trend_defense_short = (df['ADX'] <= 25) | (df['EMA_200_2pct'] <= 0.02)
-
-    # -------------------------------------------------
-    # 7) 최종 진입 신호 (흐름 + 필터 + 방어)
-    # -------------------------------------------------
-    long_signal = (
-        (base_long | long_flow) &
-        long_crossover &
-        trend_defense_long
-    )
-    short_signal = (
-        (base_short | short_flow) &
-        short_crossunder &
-        trend_defense_short
-    )
-
-    # -------------------------------------------------
-    # 8) 최소 거래 보장 (fallback)
-    # -------------------------------------------------
-    fallback_long = base_long
-    fallback_short = base_short
-
-    df['Long_Signal'] = np.where(long_signal, 1, np.where(fallback_long, 1, 0))
-    df['Short_Signal'] = np.where(short_signal, -1, np.where(fallback_short, -1, 0))
-
-    # -------------------------------------------------
-    # 9) 포지션, 진입가, TP/SL 계산
-    # -------------------------------------------------
-    df['Signal'] = np.where(df['Long_Signal'] == 1, 1,
-                            np.where(df['Short_Signal'] == -1, -1, 0))
-
-    # 포지션 (0: flat, 1: long, -1: short)
-    df['Position'] = df['Signal'].replace(0, np.nan).ffill().shift(1).fillna(0)
-
-    # 진입 플래그
+    # 🔟 진입 플래그 (시그널이 발생하고 포지션이 없을 때)
     df['Entry_Flag'] = (df['Signal'] != 0) & (df['Position'] == 0)
 
-    # 진입가 (첫 진입 시 close 사용, 이후 NaN은 ffill)
-    df['Entry_Price'] = np.where(df['Entry_Flag'], df['close'], np.nan).ffill()
+    # 1️⃣1️⃣ 진입 가격 (NaN → NaN, ffill)
+    df['Entry_Price'] = pd.Series(
+        np.where(df['Entry_Flag'], df['close'], np.nan),
+        index=df.index
+    ).ffill()
 
-    # 동적 TP/SL
-    df['TP'] = np.where(df['Signal'] == 1,
-                        df['Entry_Price'] * (1 + tp),
-                        df['Entry_Price'] * (1 - tp))
-    df['SL'] = np.where(df['Signal'] == 1,
-                        df['Entry_Price'] * (1 - sl),
-                        df['Entry_Price'] * (1 + sl))
+    # 1️⃣2️⃣ TP / SL 계산 (np.select → Series → ffill)
+    df['TP'] = pd.Series(
+        np.select(
+            [df['Signal'] == 1, df['Signal'] == -1],
+            [df['Entry_Price'] * (1 + tp), df['Entry_Price'] * (1 - tp)],
+            default=np.nan
+        ),
+        index=df.index
+    ).ffill()
+
+    df['SL'] = pd.Series(
+        np.select(
+            [df['Signal'] == 1, df['Signal'] == -1],
+            [df['Entry_Price'] * (1 - sl), df['Entry_Price'] * (1 + sl)],
+            default=np.nan
+        ),
+        index=df.index
+    ).ffill()
 
     return df, {'tp': tp, 'sl': sl}
