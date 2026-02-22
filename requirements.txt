@@ -4,7 +4,7 @@ numpy==1.23.5
 python-dotenv
 vectorbt==0.28.1
 sqlalchemy
-kaleido
+kaleido==0.2.1  # 👈 버전을 0.2.1로 고정 (Chrome 설치 없이 이미지 저장 가능)
 # 삭제된 깃허브 대신 소스포지(SourceForge) 미러를 통해 0.3.14b 버전을 강제 설치합니다.
 https://sourceforge.net/projects/pandas-ta.mirror/files/0.3.14/PandasTA-v0.3.14b%20source%20code.zip/download
 python-telegram-bot
