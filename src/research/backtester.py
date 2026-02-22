@@ -27,16 +27,18 @@ def run_final_test():
     
     print(f"💡 테스트 파라미터 - 기본 TP: {d_params.get('tp', 0)*100:.2f}%, 기본 SL: {d_params.get('sl', 0)*100:.2f}%")
     
-    # 3. 백테스트 실행 (VectorBT)
+    # 3. 백테스트 실행 (10배 레버리지 반영)
     pf = vbt.Portfolio.from_signals(
         df['close'], 
         entries=df.get('Long_Signal', False),        
         short_entries=df.get('Short_Signal', False), 
-        tp_stop=tp_val, # 시점별 동적 익절 적용 (컬럼 혹은 고정값)
-        sl_stop=sl_val, # 시점별 동적 손절 적용 (컬럼 혹은 고정값)
-        fees=0.0005,    # 실전 수수료에 가깝게 조정
-        slippage=0.0005, # 실전 슬리피지 반영
-        freq='3m'
+        tp_stop=tp_val, 
+        sl_stop=sl_val, 
+        fees=0.0005,    
+        slippage=0.0005, 
+        freq='3m',
+        leverage=10,        # 🌟 10배 레버리지 추가
+        leverage_fixed=True
     )
     
     # 4. 결과 출력

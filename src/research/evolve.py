@@ -105,7 +105,9 @@ def run_backtest_and_chart():
         tp_stop=params.get('tp', 0.02),
         sl_stop=params.get('sl', 0.015), 
         fees=0.0005, 
-        freq='3m'
+        freq='3m',
+        leverage=10,        # 🌟 10배 레버리지 추가
+        leverage_fixed=True # 레버리지 고정
     )
     
     report_dir = "data/reports"
