@@ -138,18 +138,18 @@ async def run_bot():
                         await send_telegram_msg(f"🏁 [실전 청산] {reason}\n📊 최종 ROE: {roe*100:.2f}%")
                         position = None
 
-            # 3분 마감 시간에 맞춰 대기 (데이터 수집 지연 방지를 위해 5초 여유)
+            # 🌟 3분 마감 시간에 맞춰 정밀하게 대기 (데이터 수집 지연 대비 5초 여유)
             now = datetime.now(KST)
             next_run = now.replace(second=5, microsecond=0) + timedelta(minutes=3 - (now.minute % 3))
             wait_sec = (next_run - now).total_seconds()
-            if wait_sec < 0: wait_sec += 180 # 이미 지났을 경우 다음 주기로
+            if wait_sec < 0: wait_sec += 180 
             
-            logger.info(f"⏳ 다음 루프까지 {wait_sec:.1f}초 대기...")
+            logger.info(f"⏳ 다음 분석까지 {wait_sec:.1f}초 대기...")
             await asyncio.sleep(max(wait_sec, 10))
             
         except Exception as e:
             logger.error(f"⚠️ 메인 루프 에러: {e}")
-            db.rollback() # DB 에러 시 롤백
+            db.rollback() 
             await asyncio.sleep(30)
 
 if __name__ == "__main__":

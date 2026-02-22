@@ -1,10 +1,15 @@
 import os
+import sys # 🌟 추가
 import traceback
 import importlib
 import pandas as pd
 import vectorbt as vbt
 from openai import OpenAI
 from dotenv import load_dotenv
+
+# 🌟 경로 설정 추가: 상위 폴더(src)를 인식하게 함
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from utils.fetcher import fetch_historical_data
 from utils.indicators import add_indicators
 
