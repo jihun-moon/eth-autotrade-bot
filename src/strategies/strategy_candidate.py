@@ -1,91 +1,53 @@
-import pandas as pd
+import pandas_ta as ta
 import numpy as np
+import pandas as pd
 
 def apply_strategy(df):
-    """
-    15분봉 스윙 매매용 다이버전스 + 매물대 + 보조지표 전략.
-    개선 포인트:
-    - VAL/VAH ±0.2% 근접 허용
-    - RSI 다이버전스 (7캔들 안정화)
-    - ADX, Squeeze, EMA_200, CVD, CVD_Signal, Volume 필터 적용
-    - 고정 TP/SL (1.5%/1.2%) + EMA_200 기반 트레일링 스탑
-    - 시그널 컬럼 (1=롱, -1=숏, 0=보류) 반환
-    """
-    # 기본 파라미터
-    tp = 0.015   # 익절 1.5%
-    sl = 0.012   # 손절 1.2%
-    adx_thr = 20   # ADX 강도 기준
-    squeeze_thr = 1   # Squeeze_On 필터
-    volume_thr = 1.0   # Volume > EMA_Volume 필터
-
-    # 1. 매물대 근접 여부 (VAL/VAH ±0.2%)
-    df['At_VAL'] = df['close'] < (df['VAL'] * 1.002)
-    df['At_VAH'] = df['close'] > (df['VAH'] * 0.998)
-
-    # 2. RSI 다이버전스 (7캔들 안정화)
-    df['RSI_Up'] = df['RSI'] > df['RSI'].shift(1)
-    df['RSI_Down'] = df['RSI'] < df['RSI'].shift(1)
-
-    # 3. 롱 진입 조건
-    long_entry = (
+    """15분봉 스윙 매매 최적화 전략 (다이버전스 + 매물대 + 트렌드 + 변동성)"""
+    # 파라미터 설정
+    tp = 0.015   # 익절 비율 1.5%
+    sl = 0.012  # 손절 비율 1.2%
+    
+    # 1. 매물대 진입 허용 범위 (0.2% tolerance)
+    df['At_VAL'] = (df['close'] < df['VAL'] * 1.002)
+    df['At_VAH'] = (df['close'] > df['VAH'] * 0.998)
+    
+    # 2. 트렌드 필터 (EMA_200)
+    df['Trend_Uptrend'] = (df['EMA_200'] > df['close'])
+    df['Trend_Downtrend'] = (df['EMA_200'] < df['close'])
+    
+    # 3. RSI 다이버전스 (7캔들 연속 상승/하락)
+    df['RSI_Up'] = (df['RSI'] > df['RSI'].shift(7))
+    df['RSI_Down'] = (df['RSI'] < df['RSI'].shift(7))
+    
+    # 4. 변동성 필터 (Squeeze_On)
+    df['No_Squeeze'] = (df['Squeeze_On'] == 0)
+    
+    # 5. 롱 시그널: 매물대 + 트렌드 + RSI 상승 + CVD 개선 + 저변동성
+    long_signal = (
         (df['At_VAL']) &
+        (df['Trend_Uptrend']) &
         (df['RSI_Up']) &
-        (df['RSI'] > 30) &
-        (df['RSI'] < 70) &
         (df['CVD'] > df['CVD_Signal']) &
-        (df['ADX'] > adx_thr) &
-        (df['Squeeze_On'] == squeeze_thr) &
-        (df['EMA_200'] < df['close']) &
-        (df['Volume'] > df['EMA_Volume'] * volume_thr)
+        (df['No_Squeeze'])
     )
-
-    # 4. 숏 진입 조건
-    short_entry = (
+    
+    # 6. 숏 시그널: 매물대 + 트렌드 + RSI 하락 + CVD 악화 + 저변동성
+    short_signal = (
         (df['At_VAH']) &
+        (df['Trend_Downtrend']) &
         (df['RSI_Down']) &
-        (df['RSI'] < 30) &
-        (df['RSI'] > 20) &
         (df['CVD'] < df['CVD_Signal']) &
-        (df['ADX'] < adx_thr) &
-        (df['Squeeze_On'] == squeeze_thr) &
-        (df['EMA_200'] > df['close']) &
-        (df['Volume'] < df['EMA_Volume'] * volume_thr)
+        (df['No_Squeeze'])
     )
-
-    # 5. 고정 TP/SL 및 트레일링 스탑 (EMA_200 기반)
-    df['TP_Long'] = df['close'] * tp
-    df['TP_Short'] = df['close'] * sl
-    df['Trail_Long'] = df['EMA_200'] - (df['EMA_200'] * sl)
-    df['Trail_Short'] = df['EMA_200'] + (df['EMA_200'] * sl)
-
-    # 6. 종료 시그널 (TP/SL 도달, 트레일링 스탑, 추세 반전)
-    df['Exit_Long'] = (
-        (df['close'] >= df['TP_Long']) |
-        (df['close'] <= df['Trail_Long']) |
-        (df['close'] < df['EMA_200'])
-    )
-    df['Exit_Short'] = (
-        (df['close'] <= df['TP_Short']) |
-        (df['close'] >= df['Trail_Short']) |
-        (df['close'] > df['EMA_200'])
-    )
-
-    # 7. 최종 진입 시그널 (진입 후 종료되지 않은 경우)
-    df['Signal_Long'] = np.where(long_entry, 1, 0)
-    df['Signal_Short'] = np.where(short_entry, -1, 0)
-    df['Final_Long'] = np.where(df['Signal_Long'] == 1 & df['Exit_Long'] == 0, 1, 0)
-    df['Final_Short'] = np.where(df['Signal_Short'] == -1 & df['Exit_Short'] == 0, -1, 0)
-    df['Final_Signal'] = np.where(df['Final_Long'] == 1, 1,
-                                 np.where(df['Final_Short'] == -1, -1, 0))
-
-    # 파라미터 딕셔너리 반환
-    params = {
-        'tp': tp,
-        'sl': sl,
-        'adx_thr': adx_thr,
-        'squeeze_thr': squeeze_thr,
-        'volume_thr': volume_thr,
-        'trend_long': 1,   # EMA_200 위에 있을 때
-        'trend_short': 1   # EMA_200 아래에 있을 때
-    }
+    
+    # 7. 시그널 통합
+    df['Signal'] = np.where(long_signal, 1, np.where(short_signal, -1, 0))
+    
+    # 8. 고정 TP/SL 레벨 (퍼센트 기준)
+    df['TP'] = df['close'] * (1 + tp)
+    df['SL'] = df['close'] * (1 - sl)
+    
+    # 9. 파라미터 반환
+    params = {'tp': tp, 'sl': sl}
     return df, params
