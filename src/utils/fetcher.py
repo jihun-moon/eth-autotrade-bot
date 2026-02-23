@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger("BottomScanner")
 
-def fetch_historical_data(symbol='ETH/USDT', timeframe='3m', limit=5000):
+def fetch_historical_data(symbol='ETH/USDT', timeframe='15m', limit=5000): # 🌟 기본값 15m으로 변경
     """증분 수집 로직 및 API 안정성 강화"""
     exchange = ccxt.binance({'enableRateLimit': True})
     raw_path = f"data/raw/{symbol.replace('/', '_')}_{timeframe}.csv"
@@ -15,7 +15,6 @@ def fetch_historical_data(symbol='ETH/USDT', timeframe='3m', limit=5000):
     df_local = pd.DataFrame()
     since = None
     
-    # 1. 기존 로컬 데이터 로드
     if os.path.exists(raw_path):
         try:
             df_local = pd.read_csv(raw_path, index_col=0, parse_dates=True)
@@ -24,7 +23,6 @@ def fetch_historical_data(symbol='ETH/USDT', timeframe='3m', limit=5000):
         except Exception as e:
             logger.error(f"⚠️ 로컬 데이터 로드 실패: {e}")
 
-    # 2. 거래소 데이터 증분 수집
     all_ohlcv = []
     attempts = 0
     max_retries = 3
@@ -36,14 +34,13 @@ def fetch_historical_data(symbol='ETH/USDT', timeframe='3m', limit=5000):
             if not ohlcv: break
             all_ohlcv.extend(ohlcv)
             since = ohlcv[-1][0] + 1
-            time.sleep(0.1) # API 부하 방지
+            time.sleep(0.1)
         except Exception as e:
             attempts += 1
             logger.warning(f"⚠️ 데이터 수집 시도 {attempts}/{max_retries} 실패: {e}")
             if attempts >= max_retries: break
             time.sleep(2 ** attempts)
 
-    # 3. 데이터 통합 및 저장
     if all_ohlcv:
         df_new = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df_new['timestamp'] = pd.to_datetime(df_new['timestamp'], unit='ms')
