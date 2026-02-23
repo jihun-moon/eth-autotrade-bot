@@ -180,33 +180,59 @@ async def evolve_command(update, context):
         await msg.edit_text(f"⚠️ **시스템 에러**: {str(e)}")
 
 async def send_report_command(update, context):
-    """/report: 후보 전략 리포트 확인"""
+    """/report: 후보 전략 리포트 및 관리 버튼 전송"""
     if str(update.effective_chat.id) != str(CHAT_ID): return
     report_path = os.path.join(REPORT_DIR, "report.png")
     
     if not os.path.exists(report_path):
-        await update.message.reply_text("📦 **대기 중인 리포트가 없습니다. /evolve를 실행하세요.**")
+        await update.message.reply_text("📦 **대기 중인 리포트가 없습니다. /evolve를 먼저 실행하세요.**")
         return
 
-    keyboard = [[InlineKeyboardButton("🚀 실전 Live 투입", callback_data="DEPLOY_LIVE")]]
+    # 🌟 버튼 구성 복원
+    keyboard = [
+        [InlineKeyboardButton("🚀 실전 Live 투입 (백업 포함)", callback_data="DEPLOY_LIVE")],
+        [InlineKeyboardButton("⏪ 이전 버전 복구 (Rollback)", callback_data="ROLLBACK")],
+        [InlineKeyboardButton("🗑️ 리포트 삭제 (Discard)", callback_data="DISCARD")]
+    ]
     
     with open(report_path, "rb") as photo:
         await context.bot.send_photo(
-            chat_id=CHAT_ID, 
+            chat_id=CHAT_ID,
             photo=photo, 
-            caption=f"🤖 **AI 개선 스윙 전략 승인 요청**\n보스, 이 {TIMEFRAME} 전략을 실전에 반영할까요?", 
+            caption=f"🤖 **AI 개선 스윙 전략 승인 요청**\n보스, {TIMEFRAME} 전략을 검토 후 결정해주세요.", 
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
 async def button_callback(update, context):
-    """결재 버튼 클릭 처리"""
+    """결재 버튼 로직 상세 구현"""
     query = update.callback_query
     await query.answer()
+
+    live_strat = os.path.join(STRAT_DIR, "strategy.py")
+    candidate_strat = os.path.join(STRAT_DIR, "strategy_candidate.py")
+    backup_strat = os.path.join(STRAT_DIR, "strategy_backup.py")
+    report_img = os.path.join(REPORT_DIR, "report.png")
+
     if query.data == "DEPLOY_LIVE":
-        live_strat = os.path.join(STRAT_DIR, "strategy.py")
-        candidate_strat = os.path.join(STRAT_DIR, "strategy_candidate.py")
+        # 현재 전략 백업 후 교체
+        if os.path.exists(live_strat):
+            shutil.copyfile(live_strat, backup_strat)
         shutil.copyfile(candidate_strat, live_strat)
-        await query.edit_message_caption("✅ **결재 승인!** 15분봉 스윙 전략이 즉시 교체되었습니다.")
+        await query.edit_message_caption("✅ **결재 승인!** 실전 전략이 교체되었고 기존 버전은 백업되었습니다.")
+
+    elif query.data == "ROLLBACK":
+        # 백업 버전으로 복구
+        if os.path.exists(backup_strat):
+            shutil.copyfile(backup_strat, live_strat)
+            await query.edit_message_caption("⏪ **복구 완료!** 시스템이 이전 안전 버전으로 되돌아갔습니다.")
+        else:
+            await query.edit_message_caption("⚠️ **복구 실패**: 백업된 전략 파일이 없습니다.")
+
+    elif query.data == "DISCARD":
+        # 후보 파일 폐기
+        if os.path.exists(candidate_strat): os.remove(candidate_strat)
+        if os.path.exists(report_img): os.remove(report_img)
+        await query.edit_message_caption("🗑️ **삭제 완료**: 해당 전략 리포트를 폐기했습니다.")
 
 if __name__ == "__main__":
     os.makedirs(STRAT_DIR, exist_ok=True)

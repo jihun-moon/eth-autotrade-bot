@@ -10,18 +10,27 @@ from utils.indicators import add_indicators
 import strategies.strategy as strategy
 
 def run_optimization():
-    print("🔎 최적 조합 찾는 중...")
-    df_base = add_indicators(fetch_historical_data(limit=5000))
-    ema_list, tp_list = [30, 50, 100], [0.015, 0.02, 0.025]
+    print("🔎 15m 스윙 최적 조합 찾는 중...")
+    # 🌟 15m 데이터 수집
+    df_base = add_indicators(fetch_historical_data(timeframe='15m', limit=5000))
+    tp_list = [0.015, 0.02, 0.025, 0.03]
+    sl_list = [0.01, 0.012, 0.015]
     results = []
 
-    for ema in ema_list:
-        df_strat, _ = strategy.apply_strategy(df_base.copy(), ema_len=ema)
-        for tp in tp_list:
-            pf = vbt.Portfolio.from_signals(df_strat['close'], entries=df_strat.get('Long_Signal', False), 
-                                           short_entries=df_strat.get('Short_Signal', False), 
-                                           tp_stop=tp, sl_stop=0.015, freq='3m')
-            results.append({'EMA': ema, 'TP': tp, 'Return': pf.total_return() * 100})
+    # 현재 전략은 ema_len을 인자로 받지 않으므로 tp/sl 위주로 테스트
+    for tp in tp_list:
+        for sl in sl_list:
+            df_strat, _ = strategy.apply_strategy(df_base.copy())
+            pf = vbt.Portfolio.from_signals(
+                df_strat['close'], 
+                entries=df_strat.get('Signal') == 1, 
+                short_entries=df_strat.get('Signal') == -1, 
+                tp_stop=tp, 
+                sl_stop=sl, 
+                freq='15m', # 🌟 15m 반영
+                fees=0.0004  # 🌟 수수료 반영
+            )
+            results.append({'TP': tp, 'SL': sl, 'Return': pf.total_return() * 100})
             
     print(pd.DataFrame(results).sort_values(by='Return', ascending=False).head(5))
 
