@@ -72,8 +72,8 @@ async def run_bot():
             # 4. 실전 포지션 관리
             if position is None:
                 # 진입 시그널 감시
-                if last.get('Long_Signal') or last.get('Short_Signal'):
-                    pos_type = "LONG" if last['Long_Signal'] else "SHORT"
+                if last['Signal'] == 1 or last['Signal'] == -1:
+                    pos_type = "LONG" if last['Signal'] == 1 else "SHORT"
                     
                     # 🌟 대응 공식: 시드 2500 USDT 고정 사용
                     balance = fetch_real_balance()
