@@ -8,6 +8,7 @@ Base = declarative_base()
 class ActivePosition(Base):
     __tablename__ = 'active_positions'
     id = Column(Integer, primary_key=True)
+    symbol = Column(String, default='ETH/USDT') # 🌟 어떤 코인인지 구분 (XRP 대응용)
     pos_type = Column(String)
     entry_price = Column(Float)
     amount = Column(Float)
