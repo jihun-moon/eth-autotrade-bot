@@ -46,7 +46,9 @@ def add_indicators(df):
         bbl = [c for c in df.columns if c.startswith('BBL_')][0]
         kcl = [c for c in df.columns if c.startswith('KCL') or c.startswith('KCLe')][0]
         df['Squeeze_On'] = df[bbl] > df[kcl]
-    except: df['Squeeze_On'] = False
+    except Exception:
+        # 볼린저/켈트너 컬럼 이름이 안 잡히면 스퀴즈는 꺼진 것으로 본다
+        df['Squeeze_On'] = False
 
     # 4. 수급(CVD)
     vol_delta = np.where(df['close'] > df['open'], df['volume'] * 0.6, -df['volume'] * 0.6)
