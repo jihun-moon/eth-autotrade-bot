@@ -1,6 +1,5 @@
 import vectorbt as vbt
 import importlib, os, sys
-import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)

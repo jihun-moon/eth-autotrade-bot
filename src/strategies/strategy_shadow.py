@@ -1,6 +1,4 @@
-import pandas as pd
 import numpy as np
-import pandas_ta as ta
 
 def apply_strategy(df, ema_len=30, tp=0.02, sl=0.015):
     """
@@ -15,18 +13,6 @@ def apply_strategy(df, ema_len=30, tp=0.02, sl=0.015):
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
-
-    # Compute EMA_200 if not present
-    if 'EMA_200' not in df.columns:
-        df['EMA_200'] = df['close'].ta.ema(200)
-
-    # Compute ADX if not present
-    if 'ADX' not in df.columns:
-        df['ADX'] = df['close'].ta.adx(14)
-
-    # Compute CVD_Signal if not present
-    if 'CVD_Signal' not in df.columns:
-        df['CVD_Signal'] = df['CVD'].ta.sma(10)
 
     # ---------- VAL bounce detection ----------
     df['VAL_cross_down'] = (df['close'] < df['VAL']) & (df['close'].shift(1) >= df['VAL'])

@@ -1,5 +1,3 @@
-import pandas_ta as ta
-import pandas as pd
 import numpy as np
 
 def apply_strategy(df):

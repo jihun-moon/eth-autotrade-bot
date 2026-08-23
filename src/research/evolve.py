@@ -1,5 +1,4 @@
 import os, sys, traceback, importlib
-import pandas as pd
 import vectorbt as vbt
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -96,8 +95,6 @@ def generate_and_correct_strategy():
         except Exception as e:
             print(f"⚠️ AI 통신 중 오류 발생: {e}")
             attempt += 1
-            
-    return False, "Unreachable"
 
 def run_backtest_and_chart():
     """검증된 후보 전략 백테스트 실행 (0.04% 수수료 반영)"""
