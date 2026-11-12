@@ -20,7 +20,7 @@ def add_indicators(df):
         
         vols = np.zeros(bins)
         for _, row in window.iterrows():
-            # 🌟 캔들의 범위를 모두 반영하여 거래량 분배
+            # 캔들의 범위를 모두 반영하여 거래량 분배
             s_bin = int((row['low'] - low_min) / price_interval)
             e_bin = int((row['high'] - low_min) / price_interval)
             for j in range(max(0, s_bin), min(bins, e_bin + 1)):

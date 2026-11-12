@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger("BottomScanner")
 
-def fetch_historical_data(symbol='ETH/USDT', timeframe='15m', limit=5000): # 🌟 기본값 15m 변경
+def fetch_historical_data(symbol='ETH/USDT', timeframe='15m', limit=5000): # 기본값 15m 변경
     """증분 수집 로직 및 API 안정성 강화"""
     exchange = ccxt.binance({'enableRateLimit': True})
     raw_path = f"data/raw/{symbol.replace('/', '_')}_{timeframe}.csv"
@@ -21,7 +21,7 @@ def fetch_historical_data(symbol='ETH/USDT', timeframe='15m', limit=5000): # �
             if not df_local.empty:
                 since = int(df_local.index[-1].timestamp() * 1000) + 1
         except Exception as e:
-            logger.error(f"⚠️ 로컬 데이터 로드 실패: {e}")
+            logger.error(f"로컬 데이터 로드 실패: {e}")
 
     all_ohlcv = []
     attempts = 0
@@ -37,7 +37,7 @@ def fetch_historical_data(symbol='ETH/USDT', timeframe='15m', limit=5000): # �
             time.sleep(0.1) 
         except Exception as e:
             attempts += 1
-            logger.warning(f"⚠️ 데이터 수집 시도 {attempts}/{max_retries} 실패: {e}")
+            logger.warning(f"데이터 수집 시도 {attempts}/{max_retries} 실패: {e}")
             if attempts >= max_retries: break
             time.sleep(2 ** attempts)
 

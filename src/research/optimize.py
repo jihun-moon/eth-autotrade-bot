@@ -10,8 +10,8 @@ from utils.indicators import add_indicators
 import strategies.strategy as strategy
 
 def run_optimization():
-    print("🔎 15m 스윙 최적 조합 찾는 중...")
-    # 🌟 15m 데이터 수집
+    print("15m 스윙 최적 조합 찾는 중...")
+    # 15m 데이터 수집
     df_base = add_indicators(fetch_historical_data(timeframe='15m', limit=5000))
     tp_list = [0.015, 0.02, 0.025, 0.03]
     sl_list = [0.01, 0.012, 0.015]
@@ -27,8 +27,8 @@ def run_optimization():
                 short_entries=df_strat.get('Signal') == -1, 
                 tp_stop=tp, 
                 sl_stop=sl, 
-                freq='15m', # 🌟 15m 반영
-                fees=0.0004  # 🌟 수수료 반영
+                freq='15m', # 15m 반영
+                fees=0.0004  # 수수료 반영
             )
             results.append({'TP': tp, 'SL': sl, 'Return': pf.total_return() * 100})
             

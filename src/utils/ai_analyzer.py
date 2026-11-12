@@ -13,7 +13,7 @@ async def analyze_market_with_ai(df=None, user_query=None, error_msg=None):
             "너는 지훈 보스의 시스템을 지키는 퀀트 엔지니어 해결사야. "
             "에러 원인을 요약하고, 즉시 취해야 할 행동을 3줄 내외로 명확히 보고해."
         )
-        prompt = f"🚨 **시스템 에러 감지**\n내용: {error_msg}\n\n어떻게 해결하면 좋을까?"
+        prompt = f"**시스템 에러 감지**\n내용: {error_msg}\n\n어떻게 해결하면 좋을까?"
     
     else:
         last = df.iloc[-1]
@@ -21,12 +21,12 @@ async def analyze_market_with_ai(df=None, user_query=None, error_msg=None):
             "현재가": f"{last['close']:.2f} USDT",
             "RSI": f"{last['RSI']:.2f}",
             "매물대": f"VAL({last['VAL']:.2f}) / POC({last['POC']:.2f}) / VAH({last['VAH']:.2f})",
-            "수급(CVD)": "✅ 매수 우위" if last['CVD'] > last['CVD_Signal'] else "❌ 매도 우위",
+            "수급(CVD)": "매수 우위" if last['CVD'] > last['CVD_Signal'] else "매도 우위",
             "추세강도": f"{last['ADX']:.2f} (ADX)",
-            "변동성": "💎 에너지 응축(스퀴즈)" if last['Squeeze_On'] else "🚀 변동성 폭발 중"
+            "변동성": "에너지 응축(스퀴즈)" if last['Squeeze_On'] else "변동성 폭발 중"
         }
 
-        # 🌟 스윙 매매 페르소나 강조
+        # 스윙 매매 페르소나 강조
         system_msg = (
             "너는 지훈 보스의 AI 스윙 트레이딩 에이전트 '바텀 스캐너'야.\n"
             "현재 시스템은 15분봉 기반 스윙 매매를 수행 중이므로, 단기 소음보다는 묵직한 추세 대응을 중시해.\n\n"
@@ -51,4 +51,4 @@ async def analyze_market_with_ai(df=None, user_query=None, error_msg=None):
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"⚠️ **AI 에이전트 통신 실패**: {str(e)}"
+        return f"**AI 에이전트 통신 실패**: {str(e)}"

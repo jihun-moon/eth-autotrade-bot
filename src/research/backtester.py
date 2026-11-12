@@ -9,8 +9,8 @@ from utils.indicators import add_indicators
 import strategies.strategy as strategy
 
 def run_final_test():
-    print("📊 [최종 검증] 15분봉 스윙 전략 분석 중...")
-    # 🌟 15m 데이터 수집
+    print("[최종 검증] 15분봉 스윙 전략 분석 중...")
+    # 15m 데이터 수집
     df = add_indicators(fetch_historical_data(timeframe='15m', limit=5000))
     importlib.reload(strategy)
     df_res, params = strategy.apply_strategy(df)
@@ -21,9 +21,9 @@ def run_final_test():
         short_entries=(df_res['Signal'] == -1), 
         tp_stop=params['tp'], 
         sl_stop=params['sl'], 
-        freq='15m', # 🌟 15m 반영
+        freq='15m', # 15m 반영
         init_cash=10000,
-        fees=0.0004  # 🌟 수수료 반영
+        fees=0.0004  # 수수료 반영
     )
     print(f"\n{pf.stats()}")
 
